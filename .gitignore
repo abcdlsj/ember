@@ -1,0 +1,8 @@
+.DS_Store
+.envrc
+.emby_token
+data.json
+ember
+*.log
+coverage.out
+coverage.html
