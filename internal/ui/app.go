@@ -31,6 +31,8 @@ const (
 	StateLoading State = iota
 	StateBrowsing
 	StateSearching
+	StateServerManage
+	StateServerEdit
 )
 
 type Model struct {
@@ -64,6 +66,15 @@ type Model struct {
 	lastPlayPosition int64
 	lastReportOK     bool
 	loggingEnabled   bool
+
+	// 服务器管理
+	serverCursor    int
+	serverInputs    []textinput.Model
+	serverFocused   int
+	editingServer   int // -1 新增, >=0 编辑
+	serverLatencies map[int]time.Duration
+	pingInProgress  bool
+	prevServerPrefix string
 }
 
 type NavState struct {
@@ -92,6 +103,10 @@ type detailMsg struct {
 
 type pingMsg time.Duration
 
+type pingServersMsg struct {
+	latencies map[int]time.Duration
+}
+
 func New(client *api.Client, store *storage.Store) *Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search..."
@@ -102,24 +117,34 @@ func New(client *api.Client, store *storage.Store) *Model {
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
+	initialState := StateLoading
+	if len(store.GetServers()) == 0 {
+		initialState = StateServerManage
+	}
+
 	return &Model{
-		client:         client,
-		store:          store,
-		section:        SectionResume,
-		state:          StateLoading,
-		pageSize:       20,
-		searchInput:    ti,
-		spinner:        sp,
-		status:         "Connecting...",
-		coverCache:     make(map[string]string),
-		detailCache:    make(map[string]*storage.MediaDetail),
-		sectionCache:   make(map[Section][]api.MediaItem),
-		sectionCursor:  make(map[Section]int),
-		loggingEnabled: true,
+		client:          client,
+		store:           store,
+		section:         SectionResume,
+		state:           initialState,
+		pageSize:        20,
+		searchInput:     ti,
+		spinner:         sp,
+		status:          "Connecting...",
+		coverCache:      make(map[string]string),
+		detailCache:     make(map[string]*storage.MediaDetail),
+		sectionCache:    make(map[Section][]api.MediaItem),
+		sectionCursor:   make(map[Section]int),
+		loggingEnabled:  true,
+		editingServer:   -1,
+		serverLatencies: make(map[int]time.Duration),
 	}
 }
 
 func (m *Model) Init() tea.Cmd {
+	if m.state == StateServerManage {
+		return m.spinner.Tick
+	}
 	return tea.Batch(
 		m.loadResume,
 		m.pingServer,
@@ -320,6 +345,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.refreshCurrentView()
 		}
 		return m, nil
+
+	case connectServerMsg:
+		if msg.err != nil {
+			m.status = "Connect failed: " + msg.err.Error()
+			m.state = StateServerManage
+			return m, nil
+		}
+		m.resetForServerSwitch(msg.samePrefix)
+		return m, m.loadResume
+
+	case pingServersMsg:
+		m.pingInProgress = false
+		m.serverLatencies = msg.latencies
+		m.status = "Ping complete"
+		return m, nil
 	}
 
 	return m, nil
@@ -368,6 +408,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.state == StateSearching {
 		return m.handleSearchKey(msg)
 	}
+	if m.state == StateServerManage {
+		return m.handleServerManageKey(msg)
+	}
+	if m.state == StateServerEdit {
+		return m.handleServerEditKey(msg)
+	}
 
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -380,11 +426,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.page > 0 {
 			m.page--
 			m.state = StateLoading
-			parentID := ""
-			if m.currentLib != nil {
-				parentID = m.currentLib.ID
-			}
-			return m, m.loadItems(parentID, m.page)
+			return m, m.loadItems(m.currentParentID(), m.page)
 		}
 
 	case "right", "l":
@@ -394,11 +436,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if (m.page+1)*m.pageSize < m.totalItems {
 			m.page++
 			m.state = StateLoading
-			parentID := ""
-			if m.currentLib != nil {
-				parentID = m.currentLib.ID
-			}
-			return m, m.loadItems(parentID, m.page)
+			return m, m.loadItems(m.currentParentID(), m.page)
 		}
 
 	case "enter":
@@ -469,9 +507,237 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.goToSeries(item)
 			}
 		}
+
+	case "m":
+		m.state = StateServerManage
+		m.serverCursor = m.store.GetActiveServerIndex()
+		return m, nil
 	}
 
 	return m, nil
+}
+
+func (m *Model) handleServerManageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	servers := m.store.GetServers()
+
+	switch msg.String() {
+	case "q", "esc":
+		m.state = StateBrowsing
+		return m, nil
+
+	case "up", "k":
+		if m.serverCursor > 0 {
+			m.serverCursor--
+		}
+
+	case "down", "j":
+		if m.serverCursor < len(servers)-1 {
+			m.serverCursor++
+		}
+
+	case "enter":
+		if len(servers) > 0 && m.serverCursor < len(servers) {
+			// 保存旧前缀用于判断是否同前缀切换
+			if oldSrv := m.store.GetActiveServer(); oldSrv != nil {
+				m.prevServerPrefix = oldSrv.Prefix()
+			} else {
+				m.prevServerPrefix = ""
+			}
+			m.store.SetActiveServer(m.serverCursor)
+			srv := m.store.GetActiveServer()
+			m.client = api.New(srv.URL)
+			if srv.UserID != "" && srv.Token != "" {
+				m.client.UserID = srv.UserID
+				m.client.Token = srv.Token
+			}
+			m.state = StateLoading
+			m.status = "Switching server..."
+			return m, m.connectServer
+		}
+
+	case "a":
+		m.editingServer = -1
+		m.initServerInputs("", "", "", "")
+		m.state = StateServerEdit
+		return m, m.serverInputs[0].Focus()
+
+	case "e":
+		if len(servers) > 0 && m.serverCursor < len(servers) {
+			srv := servers[m.serverCursor]
+			m.editingServer = m.serverCursor
+			m.initServerInputs(srv.Name, srv.URL, srv.Username, srv.Password)
+			m.state = StateServerEdit
+			return m, m.serverInputs[0].Focus()
+		}
+
+	case "d", "delete":
+		if len(servers) > 0 && m.serverCursor < len(servers) {
+			m.store.DeleteServer(m.serverCursor)
+			if m.serverCursor >= len(m.store.GetServers()) && m.serverCursor > 0 {
+				m.serverCursor--
+			}
+		}
+
+	case "p":
+		if m.pingInProgress {
+			return m, nil
+		}
+		m.pingInProgress = true
+		m.serverLatencies = make(map[int]time.Duration)
+		m.status = "Pinging servers..."
+		return m, m.pingSamePrefix()
+	}
+
+	return m, nil
+}
+
+func (m *Model) handleServerEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.state = StateServerManage
+		return m, nil
+
+	case "tab", "down":
+		m.serverInputs[m.serverFocused].Blur()
+		m.serverFocused = (m.serverFocused + 1) % len(m.serverInputs)
+		return m, m.serverInputs[m.serverFocused].Focus()
+
+	case "shift+tab", "up":
+		m.serverInputs[m.serverFocused].Blur()
+		m.serverFocused = (m.serverFocused - 1 + len(m.serverInputs)) % len(m.serverInputs)
+		return m, m.serverInputs[m.serverFocused].Focus()
+
+	case "enter":
+		srv := storage.Server{
+			Name:     m.serverInputs[0].Value(),
+			URL:      m.serverInputs[1].Value(),
+			Username: m.serverInputs[2].Value(),
+			Password: m.serverInputs[3].Value(),
+		}
+		if srv.URL == "" {
+			m.status = "URL is required"
+			return m, nil
+		}
+		if srv.Name == "" {
+			srv.Name = srv.URL
+		}
+		if m.editingServer < 0 {
+			m.store.AddServer(srv)
+			m.serverCursor = len(m.store.GetServers()) - 1
+		} else {
+			old := m.store.GetServers()[m.editingServer]
+			srv.UserID = old.UserID
+			srv.Token = old.Token
+			m.store.UpdateServer(m.editingServer, srv)
+		}
+		m.state = StateServerManage
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.serverInputs[m.serverFocused], cmd = m.serverInputs[m.serverFocused].Update(msg)
+	return m, cmd
+}
+
+func (m *Model) initServerInputs(name, url, username, password string) {
+	m.serverInputs = make([]textinput.Model, 4)
+
+	m.serverInputs[0] = textinput.New()
+	m.serverInputs[0].Placeholder = "Prefix Description (e.g. HomeNAS Main)"
+	m.serverInputs[0].SetValue(name)
+	m.serverInputs[0].CharLimit = 50
+	m.serverInputs[0].Width = 40
+
+	m.serverInputs[1] = textinput.New()
+	m.serverInputs[1].Placeholder = "http://your-server:8096"
+	m.serverInputs[1].SetValue(url)
+	m.serverInputs[1].CharLimit = 200
+	m.serverInputs[1].Width = 40
+
+	m.serverInputs[2] = textinput.New()
+	m.serverInputs[2].Placeholder = "Username"
+	m.serverInputs[2].SetValue(username)
+	m.serverInputs[2].CharLimit = 50
+	m.serverInputs[2].Width = 40
+
+	m.serverInputs[3] = textinput.New()
+	m.serverInputs[3].Placeholder = "Password"
+	m.serverInputs[3].SetValue(password)
+	m.serverInputs[3].EchoMode = textinput.EchoPassword
+	m.serverInputs[3].CharLimit = 100
+	m.serverInputs[3].Width = 40
+
+	m.serverFocused = 0
+}
+
+type connectServerMsg struct {
+	err        error
+	samePrefix bool
+}
+
+func (m *Model) connectServer() tea.Msg {
+	srv := m.store.GetActiveServer()
+	if srv == nil {
+		return connectServerMsg{err: fmt.Errorf("no server")}
+	}
+
+	samePrefix := m.prevServerPrefix != "" && srv.Prefix() == m.prevServerPrefix
+
+	m.client = api.New(srv.URL)
+
+	if srv.UserID != "" && srv.Token != "" {
+		m.client.UserID = srv.UserID
+		m.client.Token = srv.Token
+		if m.client.VerifyToken() {
+			return connectServerMsg{err: nil, samePrefix: samePrefix}
+		}
+	}
+
+	if err := m.client.Login(srv.Username, srv.Password); err != nil {
+		return connectServerMsg{err: err}
+	}
+
+	m.store.SaveServerToken(m.store.GetActiveServerIndex(), m.client.UserID, m.client.Token)
+	return connectServerMsg{err: nil, samePrefix: samePrefix}
+}
+
+func (m *Model) pingSamePrefix() tea.Cmd {
+	return func() tea.Msg {
+		srv := m.store.GetActiveServer()
+		if srv == nil {
+			return pingServersMsg{latencies: nil}
+		}
+
+		prefix := srv.Prefix()
+		servers := m.store.GetServers()
+
+		type pingResult struct {
+			idx     int
+			latency time.Duration
+		}
+
+		var targets []int
+		for i, s := range servers {
+			if s.Prefix() == prefix {
+				targets = append(targets, i)
+			}
+		}
+
+		ch := make(chan pingResult, len(targets))
+		for _, idx := range targets {
+			go func(i int, url string) {
+				ch <- pingResult{idx: i, latency: api.New(url).Ping()}
+			}(idx, servers[idx].URL)
+		}
+
+		latencies := make(map[int]time.Duration, len(targets))
+		for range targets {
+			r := <-ch
+			latencies[r.idx] = r.latency
+		}
+
+		return pingServersMsg{latencies: latencies}
+	}
 }
 
 func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -734,12 +1000,7 @@ func (m *Model) refreshCurrentView() (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	default:
-		// 刷新当前列表
-		parentID := ""
-		if m.currentLib != nil {
-			parentID = m.currentLib.ID
-		}
-		return m, m.loadItems(parentID, m.page)
+		return m, m.loadItems(m.currentParentID(), m.page)
 	}
 }
 
@@ -850,6 +1111,31 @@ func (m *Model) pushNav() {
 	})
 }
 
+func (m *Model) currentParentID() string {
+	if m.currentLib != nil {
+		return m.currentLib.ID
+	}
+	return ""
+}
+
+func (m *Model) resetForServerSwitch(samePrefix bool) {
+	m.status = "Connected"
+	m.state = StateLoading
+	m.section = SectionResume
+	m.navStack = nil
+	m.currentLib = nil
+	m.page = 0
+	m.cursor = 0
+	m.sectionCache = make(map[Section][]api.MediaItem)
+	m.sectionCursor = make(map[Section]int)
+	m.coverCache = make(map[string]string)
+
+	if !samePrefix {
+		m.detailCache = make(map[string]*storage.MediaDetail)
+		m.serverLatencies = make(map[int]time.Duration)
+	}
+}
+
 // syncItemState 同步更新所有位置的 item 状态（m.items, sectionCache, navStack）
 func (m *Model) syncItemState(itemID string, updater func(*api.MediaItem)) {
 	// 更新当前 items
@@ -896,6 +1182,14 @@ func (m *Model) renderCarousel(width, height int) string {
 	style := lipgloss.NewStyle().
 		Width(width).
 		Height(height)
+
+	if m.state == StateServerManage {
+		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderServerManage())
+	}
+
+	if m.state == StateServerEdit {
+		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderServerEdit())
+	}
 
 	if m.state == StateSearching {
 		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderSearch())
@@ -1036,6 +1330,99 @@ func (m *Model) renderSearch() string {
 	return lipgloss.JoinVertical(lipgloss.Center, title, m.searchInput.View(), hint)
 }
 
+func (m *Model) renderServerManage() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render("Server Management")
+
+	servers := m.store.GetServers()
+	if len(servers) == 0 {
+		emptyMsg := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("No servers configured")
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render("[a]dd  [esc] back")
+		return lipgloss.JoinVertical(lipgloss.Center, title, emptyMsg, hint)
+	}
+
+	activeIdx := m.store.GetActiveServerIndex()
+	activePrefix := ""
+	if srv := m.store.GetActiveServer(); srv != nil {
+		activePrefix = srv.Prefix()
+	}
+
+	lines := make([]string, len(servers))
+	for i, srv := range servers {
+		lines[i] = m.renderServerLine(i, srv, activeIdx, activePrefix)
+	}
+
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
+		"[a]dd  [e]dit  [d]elete  [p]ing  [enter] connect  [esc] back",
+	)
+
+	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return lipgloss.JoinVertical(lipgloss.Center, title, content, hint)
+}
+
+func (m *Model) renderServerLine(idx int, srv storage.Server, activeIdx int, activePrefix string) string {
+	prefix := "  "
+	if idx == activeIdx {
+		prefix = "* "
+	}
+
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	if idx == m.serverCursor {
+		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	}
+
+	name := srv.Name
+	if name == "" {
+		name = srv.URL
+	}
+
+	line := style.Render(prefix + name)
+
+	if lat, ok := m.serverLatencies[idx]; ok {
+		line += renderLatency(lat)
+	} else if srv.Prefix() == activePrefix && m.pingInProgress {
+		line += lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(" ...")
+	}
+
+	return line
+}
+
+func renderLatency(lat time.Duration) string {
+	color := "82"
+	if lat > time.Second {
+		color = "196"
+	} else if lat > 500*time.Millisecond {
+		color = "214"
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fmt.Sprintf(" %dms", lat.Milliseconds()))
+}
+
+func (m *Model) renderServerEdit() string {
+	title := "Add Server"
+	if m.editingServer >= 0 {
+		title = "Edit Server"
+	}
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render(title)
+
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Width(12)
+	var fields []string
+	labels := []string{"Name:", "URL:", "Username:", "Password:"}
+	for i, input := range m.serverInputs {
+		label := labelStyle.Render(labels[i])
+		fields = append(fields, lipgloss.JoinHorizontal(lipgloss.Left, label, input.View()))
+	}
+
+	tip := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true).MarginTop(1).Render(
+		"Name: same prefix = shared data (e.g. HomeNAS Main, HomeNAS Backup)",
+	)
+
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
+		"[Tab] next  [Enter] save  [Esc] cancel",
+	)
+
+	content := lipgloss.JoinVertical(lipgloss.Left, fields...)
+	return lipgloss.JoinVertical(lipgloss.Center, titleStyle, content, tip, hint)
+}
+
 func (m *Model) renderStatus(width, height int) string {
 	style := lipgloss.NewStyle().
 		Width(width).
@@ -1043,6 +1430,19 @@ func (m *Model) renderStatus(width, height int) string {
 		Padding(1, 1)
 
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).Padding(0, 1).Render("EMBER")
+
+	var serverName string
+	if srv := m.store.GetActiveServer(); srv != nil {
+		serverName = srv.Name
+		if serverName == "" {
+			serverName = srv.URL
+		}
+		if len(serverName) > width-4 {
+			serverName = serverName[:width-7] + "..."
+		}
+	} else {
+		serverName = "(no server)"
+	}
 
 	sections := []struct {
 		key  string
@@ -1064,16 +1464,7 @@ func (m *Model) renderStatus(width, height int) string {
 		navItems = append(navItems, line)
 	}
 
-	latencyColor := "82"
-	if m.latency > 500*time.Millisecond {
-		latencyColor = "214"
-	}
-	if m.latency > time.Second {
-		latencyColor = "196"
-	}
-
-	latency := lipgloss.NewStyle().Foreground(lipgloss.Color(latencyColor)).
-		Render(fmt.Sprintf(" %dms", m.latency.Milliseconds()))
+	latency := renderLatency(m.latency)
 
 	mpvStatus := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(" N/A")
 	if player.Available() {
@@ -1091,6 +1482,7 @@ func (m *Model) renderStatus(width, height int) string {
 
 	lines := []string{
 		title,
+		dimStyle.Render(" " + serverName),
 		"",
 		dimStyle.Render(" Nav:"),
 	}
@@ -1165,6 +1557,7 @@ func (m *Model) renderStatus(width, height int) string {
 		dimStyle.Render(" c    continuous"),
 		dimStyle.Render(" d    debug"),
 		dimStyle.Render(" r    refresh"),
+		dimStyle.Render(" m    servers"),
 		dimStyle.Render(" /    search"),
 		dimStyle.Render(" q    quit"),
 	)

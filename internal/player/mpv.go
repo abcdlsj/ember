@@ -14,6 +14,10 @@ import (
 var mpvPath string
 
 func init() {
+	mpvPath = findMPVPath()
+}
+
+func findMPVPath() string {
 	candidates := []string{
 		filepath.Join(os.Getenv("HOME"), "Applications/mpv.app/Contents/MacOS/mpv"),
 		"/Applications/mpv.app/Contents/MacOS/mpv",
@@ -21,14 +25,14 @@ func init() {
 
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
-			mpvPath = p
-			return
+			return p
 		}
 	}
 
 	if path, err := exec.LookPath("mpv"); err == nil {
-		mpvPath = path
+		return path
 	}
+	return ""
 }
 
 func Available() bool {
@@ -40,8 +44,6 @@ type PlayResult struct {
 	PositionSec int64
 }
 
-var positionRegex = regexp.MustCompile(`(?:AV|A|V):\s*(\d+):(\d+):(\d+)`)
-
 func Play(url, title string, subtitleURLs []string, startPositionSec int64) PlayResult {
 	return PlayMultiple([]string{url}, title, subtitleURLs, startPositionSec, 0)
 }
@@ -50,11 +52,31 @@ func PlayMultiple(urls []string, title string, subtitleURLs []string, startPosit
 	if mpvPath == "" {
 		return PlayResult{Err: exec.ErrNotFound}
 	}
-
 	if len(urls) == 0 {
 		return PlayResult{Err: fmt.Errorf("no URLs provided")}
 	}
 
+	args := buildMPVArgs(title, subtitleURLs, urls, startPositionSec, startIndex)
+	logging.MPV(mpvPath, args)
+
+	cmd := exec.Command(mpvPath, args...)
+	cmd.Stdin = os.Stdin
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return PlayResult{Err: err}
+	}
+	if err := cmd.Start(); err != nil {
+		return PlayResult{Err: err}
+	}
+
+	lastPositionSec := readPlaybackPosition(stdout, startPositionSec)
+	runErr := cmd.Wait()
+
+	return PlayResult{Err: runErr, PositionSec: lastPositionSec}
+}
+
+func buildMPVArgs(title string, subtitleURLs, urls []string, startPositionSec int64, startIndex int) []string {
 	args := []string{
 		"--hwdec=auto",
 		"--vo=gpu",
@@ -69,7 +91,6 @@ func PlayMultiple(urls []string, title string, subtitleURLs []string, startPosit
 	if startPositionSec > 0 {
 		args = append(args, fmt.Sprintf("--start=%d", startPositionSec))
 	}
-
 	if startIndex > 0 {
 		args = append(args, fmt.Sprintf("--playlist-start=%d", startIndex))
 	}
@@ -77,60 +98,47 @@ func PlayMultiple(urls []string, title string, subtitleURLs []string, startPosit
 	for _, subURL := range subtitleURLs {
 		args = append(args, "--sub-file="+subURL)
 	}
+	args = append(args, urls...)
 
-	for _, url := range urls {
-		args = append(args, url)
-	}
+	return args
+}
 
-	logging.MPV(mpvPath, args)
+var posRegex = regexp.MustCompile(`POS:(\d+(?:\.\d+)?)`)
 
-	cmd := exec.Command(mpvPath, args...)
-	cmd.Stdin = os.Stdin
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return PlayResult{Err: err}
-	}
-
-	if err := cmd.Start(); err != nil {
-		return PlayResult{Err: err}
-	}
-
-	var lastPositionSec int64
+func readPlaybackPosition(r interface{ Read([]byte) (int, error) }, fallback int64) int64 {
+	var lastPos int64
 	buf := make([]byte, 256)
+
 	for {
-		n, err := stdout.Read(buf)
+		n, err := r.Read(buf)
 		if err != nil {
 			break
 		}
-		if pos := parsePositionFromBytes(buf[:n]); pos > 0 {
-			lastPositionSec = pos
+		if pos := parsePositionFromOutput(buf[:n]); pos > 0 {
+			lastPos = pos
 		}
 	}
 
-	runErr := cmd.Wait()
-
-	if lastPositionSec == 0 {
-		lastPositionSec = startPositionSec
+	if lastPos == 0 {
+		return fallback
 	}
-
-	return PlayResult{Err: runErr, PositionSec: lastPositionSec}
+	return lastPos
 }
 
-var posRegex = regexp.MustCompile(`POS:(\d+):(\d+):(\d+)`)
-
-func parsePositionFromBytes(data []byte) int64 {
-	s := string(data)
-	matches := posRegex.FindAllStringSubmatch(s, -1)
+func parsePositionFromOutput(data []byte) int64 {
+	matches := posRegex.FindAllStringSubmatch(string(data), -1)
 	if len(matches) == 0 {
 		return 0
 	}
+
 	last := matches[len(matches)-1]
-	if len(last) == 4 {
-		h, _ := strconv.ParseInt(last[1], 10, 64)
-		m, _ := strconv.ParseInt(last[2], 10, 64)
-		sec, _ := strconv.ParseInt(last[3], 10, 64)
-		return h*3600 + m*60 + sec
+	if len(last) < 2 {
+		return 0
 	}
-	return 0
+
+	sec, err := strconv.ParseFloat(last[1], 64)
+	if err != nil {
+		return 0
+	}
+	return int64(sec)
 }

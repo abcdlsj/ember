@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"time"
 
 	"ember/internal/logging"
@@ -91,12 +90,21 @@ type AuthUser struct {
 	Name string `json:"Name"`
 }
 
-func New() *Client {
+func New(server string) *Client {
 	return &Client{
-		Server: os.Getenv("EMBY_SERVER"),
+		Server: server,
 		http: &http.Client{
 			Timeout: httpTimeout,
 		},
+	}
+}
+
+func baseParams(limit int) url.Values {
+	return url.Values{
+		"Limit":            {fmt.Sprintf("%d", limit)},
+		"Fields":           {"Overview,MediaSources,ProductionYear"},
+		"ImageTypeLimit":   {"1"},
+		"EnableImageTypes": {"Primary"},
 	}
 }
 
@@ -181,8 +189,8 @@ func (c *Client) VerifyToken() bool {
 	return err == nil
 }
 
-func (c *Client) GetLibraries() ([]MediaItem, error) {
-	data, err := c.request(context.Background(), "GET", "/emby/Users/"+c.UserID+"/Views", nil)
+func (c *Client) getItems(endpoint string) ([]MediaItem, error) {
+	data, err := c.request(context.Background(), "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -194,15 +202,14 @@ func (c *Client) GetLibraries() ([]MediaItem, error) {
 	return resp.Items, nil
 }
 
-func (c *Client) GetLatest(limit int) ([]MediaItem, error) {
-	params := url.Values{
-		"Limit":            {fmt.Sprintf("%d", limit)},
-		"Fields":           {"Overview,MediaSources,ProductionYear"},
-		"ImageTypeLimit":   {"1"},
-		"EnableImageTypes": {"Primary"},
-	}
+func (c *Client) GetLibraries() ([]MediaItem, error) {
+	return c.getItems("/emby/Users/" + c.UserID + "/Views")
+}
 
+func (c *Client) GetLatest(limit int) ([]MediaItem, error) {
+	params := baseParams(limit)
 	endpoint := fmt.Sprintf("/emby/Users/%s/Items/Latest?%s", c.UserID, params.Encode())
+
 	data, err := c.request(context.Background(), "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -216,37 +223,17 @@ func (c *Client) GetLatest(limit int) ([]MediaItem, error) {
 }
 
 func (c *Client) GetResume(limit int) ([]MediaItem, error) {
-	params := url.Values{
-		"Limit":            {fmt.Sprintf("%d", limit)},
-		"Fields":           {"Overview,MediaSources,ProductionYear"},
-		"ImageTypeLimit":   {"1"},
-		"EnableImageTypes": {"Primary"},
-	}
-
+	params := baseParams(limit)
 	endpoint := fmt.Sprintf("/emby/Users/%s/Items/Resume?%s", c.UserID, params.Encode())
-	data, err := c.request(context.Background(), "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp ItemsResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Items, nil
+	return c.getItems(endpoint)
 }
 
 func (c *Client) GetItems(parentID string, start, limit int) ([]MediaItem, int, error) {
-	params := url.Values{
-		"Recursive":        {"true"},
-		"Fields":           {"Overview,MediaSources,ProductionYear"},
-		"SortBy":           {"SortName"},
-		"SortOrder":        {"Ascending"},
-		"StartIndex":       {fmt.Sprintf("%d", start)},
-		"Limit":            {fmt.Sprintf("%d", limit)},
-		"ImageTypeLimit":   {"1"},
-		"EnableImageTypes": {"Primary"},
-	}
+	params := baseParams(limit)
+	params.Set("Recursive", "true")
+	params.Set("SortBy", "SortName")
+	params.Set("SortOrder", "Ascending")
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
 	if parentID != "" {
 		params.Set("ParentId", parentID)
 	}
@@ -265,24 +252,13 @@ func (c *Client) GetItems(parentID string, start, limit int) ([]MediaItem, int, 
 }
 
 func (c *Client) Search(query string, limit int) ([]MediaItem, error) {
-	params := url.Values{
-		"Recursive":  {"true"},
-		"SearchTerm": {query},
-		"Limit":      {fmt.Sprintf("%d", limit)},
-		"Fields":     {"Overview,MediaSources,ProductionYear,UserData"},
-	}
+	params := baseParams(limit)
+	params.Set("Recursive", "true")
+	params.Set("SearchTerm", query)
+	params.Set("Fields", "Overview,MediaSources,ProductionYear,UserData")
 
 	endpoint := fmt.Sprintf("/emby/Users/%s/Items?%s", c.UserID, params.Encode())
-	data, err := c.request(context.Background(), "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp ItemsResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Items, nil
+	return c.getItems(endpoint)
 }
 
 func (c *Client) GetItem(itemID string) (*MediaItem, error) {
@@ -305,16 +281,7 @@ func (c *Client) GetItem(itemID string) (*MediaItem, error) {
 
 func (c *Client) GetSeasons(seriesID string) ([]MediaItem, error) {
 	endpoint := fmt.Sprintf("/emby/Shows/%s/Seasons?UserId=%s", seriesID, c.UserID)
-	data, err := c.request(context.Background(), "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp ItemsResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Items, nil
+	return c.getItems(endpoint)
 }
 
 func (c *Client) GetEpisodes(seriesID, seasonID string) ([]MediaItem, error) {
@@ -323,18 +290,8 @@ func (c *Client) GetEpisodes(seriesID, seasonID string) ([]MediaItem, error) {
 		"SeasonId": {seasonID},
 		"Fields":   {"MediaSources,Overview"},
 	}
-
 	endpoint := fmt.Sprintf("/emby/Shows/%s/Episodes?%s", seriesID, params.Encode())
-	data, err := c.request(context.Background(), "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp ItemsResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Items, nil
+	return c.getItems(endpoint)
 }
 
 func (c *Client) StreamURL(itemID, sourceID, container string) string {
@@ -358,40 +315,34 @@ func (c *Client) Ping() time.Duration {
 	return time.Since(start)
 }
 
-func (c *Client) ReportPlaybackStart(itemID, mediaSourceID, playSessionID string, positionTicks int64) error {
-	body := map[string]any{
+func (c *Client) playbackBody(itemID, mediaSourceID, playSessionID string, positionTicks int64) map[string]any {
+	return map[string]any{
 		"ItemId":        itemID,
 		"MediaSourceId": mediaSourceID,
-		"CanSeek":       true,
-		"PlayMethod":    "DirectStream",
 		"PlaySessionId": playSessionID,
 		"PositionTicks": positionTicks,
 	}
+}
+
+func (c *Client) ReportPlaybackStart(itemID, mediaSourceID, playSessionID string, positionTicks int64) error {
+	body := c.playbackBody(itemID, mediaSourceID, playSessionID, positionTicks)
+	body["CanSeek"] = true
+	body["PlayMethod"] = "DirectStream"
 	_, err := c.request(context.Background(), "POST", "/emby/Sessions/Playing", body)
 	return err
 }
 
 func (c *Client) ReportPlaybackProgress(itemID, mediaSourceID, playSessionID string, positionTicks int64, isPaused bool) error {
-	body := map[string]any{
-		"ItemId":        itemID,
-		"MediaSourceId": mediaSourceID,
-		"CanSeek":       true,
-		"PlayMethod":    "DirectStream",
-		"PlaySessionId": playSessionID,
-		"PositionTicks": positionTicks,
-		"IsPaused":      isPaused,
-	}
+	body := c.playbackBody(itemID, mediaSourceID, playSessionID, positionTicks)
+	body["CanSeek"] = true
+	body["PlayMethod"] = "DirectStream"
+	body["IsPaused"] = isPaused
 	_, err := c.request(context.Background(), "POST", "/emby/Sessions/Playing/Progress", body)
 	return err
 }
 
 func (c *Client) ReportPlaybackStopped(itemID, mediaSourceID, playSessionID string, positionTicks int64) error {
-	body := map[string]any{
-		"ItemId":        itemID,
-		"MediaSourceId": mediaSourceID,
-		"PositionTicks": positionTicks,
-		"PlaySessionId": playSessionID,
-	}
+	body := c.playbackBody(itemID, mediaSourceID, playSessionID, positionTicks)
 	_, err := c.request(context.Background(), "POST", "/emby/Sessions/Playing/Stopped", body)
 	return err
 }
@@ -409,51 +360,25 @@ func (c *Client) RemoveFavorite(itemID string) error {
 }
 
 func (c *Client) GetFavorites(limit int) ([]MediaItem, error) {
-	params := url.Values{
-		"Recursive":        {"true"},
-		"Limit":            {fmt.Sprintf("%d", limit)},
-		"Fields":           {"Overview,MediaSources,ProductionYear,UserData"},
-		"Filters":          {"IsFavorite"},
-		"IncludeItemTypes": {"Movie,Series,Episode"},
-		"ImageTypeLimit":   {"1"},
-		"EnableImageTypes": {"Primary"},
-	}
+	params := baseParams(limit)
+	params.Set("Recursive", "true")
+	params.Set("Fields", "Overview,MediaSources,ProductionYear,UserData")
+	params.Set("Filters", "IsFavorite")
+	params.Set("IncludeItemTypes", "Movie,Series,Episode")
 
 	endpoint := fmt.Sprintf("/emby/Users/%s/Items?%s", c.UserID, params.Encode())
-	data, err := c.request(context.Background(), "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp ItemsResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Items, nil
+	return c.getItems(endpoint)
 }
 
 func (c *Client) GetResumeItems(limit int) ([]MediaItem, error) {
-	params := url.Values{
-		"Recursive":        {"true"},
-		"Limit":            {fmt.Sprintf("%d", limit)},
-		"Fields":           {"Overview,MediaSources,ProductionYear,UserData"},
-		"Filters":          {"IsResumable"},
-		"SortBy":           {"DatePlayed"},
-		"SortOrder":        {"Descending"},
-		"IncludeItemTypes": {"Movie,Episode"},
-		"ImageTypeLimit":   {"1"},
-		"EnableImageTypes": {"Primary"},
-	}
+	params := baseParams(limit)
+	params.Set("Recursive", "true")
+	params.Set("Fields", "Overview,MediaSources,ProductionYear,UserData")
+	params.Set("Filters", "IsResumable")
+	params.Set("SortBy", "DatePlayed")
+	params.Set("SortOrder", "Descending")
+	params.Set("IncludeItemTypes", "Movie,Episode")
 
 	endpoint := fmt.Sprintf("/emby/Users/%s/Items?%s", c.UserID, params.Encode())
-	data, err := c.request(context.Background(), "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp ItemsResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Items, nil
+	return c.getItems(endpoint)
 }
