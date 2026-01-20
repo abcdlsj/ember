@@ -47,6 +47,22 @@ type MediaItem struct {
 	UserData     *UserData     `json:"UserData,omitempty"`
 }
 
+func (m *MediaItem) imageID() string {
+	if m.ImageTags.Primary != "" {
+		return m.ID
+	}
+	if m.SeriesID != "" {
+		return m.SeriesID
+	}
+	if m.SeasonID != "" {
+		return m.SeasonID
+	}
+	if m.ParentID != "" {
+		return m.ParentID
+	}
+	return m.ID
+}
+
 type UserData struct {
 	PlaybackPositionTicks int64  `json:"PlaybackPositionTicks"`
 	Played                bool   `json:"Played"`
@@ -299,7 +315,13 @@ func (c *Client) StreamURL(itemID, sourceID, container string) string {
 		c.Server, itemID, container, sourceID, c.Token)
 }
 
-func (c *Client) ImageURL(itemID string, width int) string {
+func (c *Client) ImageURL(item MediaItem, width int) string {
+	imageID := item.imageID()
+	return fmt.Sprintf("%s/emby/Items/%s/Images/Primary?maxWidth=%d&api_key=%s",
+		c.Server, imageID, width, c.Token)
+}
+
+func (c *Client) ImageURLByID(itemID string, width int) string {
 	return fmt.Sprintf("%s/emby/Items/%s/Images/Primary?maxWidth=%d&api_key=%s",
 		c.Server, itemID, width, c.Token)
 }

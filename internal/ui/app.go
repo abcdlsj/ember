@@ -221,7 +221,7 @@ func (m *Model) pingServer() tea.Msg {
 
 func (m *Model) loadImage(item api.MediaItem, width, height int) tea.Cmd {
 	return func() tea.Msg {
-		url := m.client.ImageURL(item.ID, 800)
+		url := m.client.ImageURL(item, 800)
 		img := RenderImage(url, width, height)
 		return imageMsg{id: item.ID, image: img}
 	}
