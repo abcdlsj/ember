@@ -386,6 +386,8 @@ func (c *Client) GetFavorites(limit int) ([]MediaItem, error) {
 	params.Set("Recursive", "true")
 	params.Set("Fields", "Overview,MediaSources,ProductionYear,UserData")
 	params.Set("Filters", "IsFavorite")
+	params.Set("SortBy", "DatePlayed")
+	params.Set("SortOrder", "Descending")
 	params.Set("IncludeItemTypes", "Movie,Series,Episode")
 
 	endpoint := fmt.Sprintf("/emby/Users/%s/Items?%s", c.UserID, params.Encode())
