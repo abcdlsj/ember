@@ -382,10 +382,13 @@ func (m *Model) loadVisibleImages() tea.Cmd {
 	}
 
 	// 计算实际的 cover 尺寸
-	statusWidth := 24
+	statusWidth := 32
+	if m.width < 100 {
+		statusWidth = 28
+	}
 	contentWidth := m.width - statusWidth
-	coverWidth := contentWidth - 2
-	coverHeight := m.height - 4
+	coverWidth := contentWidth - 4
+	coverHeight := m.height - 6
 
 	for i := start; i < end; i++ {
 		item := m.items[i]
@@ -1169,7 +1172,10 @@ func (m *Model) View() string {
 		return "Loading..."
 	}
 
-	statusWidth := 24
+	statusWidth := 32
+	if m.width < 100 {
+		statusWidth = 28
+	}
 	contentWidth := m.width - statusWidth
 
 	content := m.renderCarousel(contentWidth, m.height)
@@ -1203,9 +1209,9 @@ func (m *Model) renderCarousel(width, height int) string {
 		return style.Align(lipgloss.Center, lipgloss.Center).Render("No items")
 	}
 
-	// info 2行 + nav 1行 + 间距 1行 = 4行
-	coverHeight := height - 4
-	coverWidth := width - 2
+	// info 2行 + nav 1行 + 间距 3行 = 6行（增加呼吸感）
+	coverHeight := height - 6
+	coverWidth := width - 4
 
 	var cover string
 	if m.cursor < 0 || m.cursor >= len(m.items) {
@@ -1427,9 +1433,11 @@ func (m *Model) renderStatus(width, height int) string {
 	style := lipgloss.NewStyle().
 		Width(width).
 		Height(height).
-		Padding(1, 1)
+		Padding(1, 2)
 
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).Padding(0, 1).Render("EMBER")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).Render("EMBER")
+
+	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", width-4))
 
 	var serverName string
 	if srv := m.store.GetActiveServer(); srv != nil {
@@ -1437,8 +1445,8 @@ func (m *Model) renderStatus(width, height int) string {
 		if serverName == "" {
 			serverName = srv.URL
 		}
-		if len(serverName) > width-4 {
-			serverName = serverName[:width-7] + "..."
+		if len(serverName) > width-6 {
+			serverName = serverName[:width-9] + "..."
 		}
 	} else {
 		serverName = "(no server)"
@@ -1455,7 +1463,7 @@ func (m *Model) renderStatus(width, height int) string {
 
 	var navItems []string
 	for _, s := range sections {
-		line := fmt.Sprintf(" %s %s", s.key, s.name)
+		line := fmt.Sprintf(" %s  %s", s.key, s.name)
 		if m.section == s.sec {
 			line = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Render(line)
 		} else {
@@ -1482,18 +1490,20 @@ func (m *Model) renderStatus(width, height int) string {
 
 	lines := []string{
 		title,
-		dimStyle.Render(" " + serverName),
-		"",
-		dimStyle.Render(" Nav:"),
+		dimStyle.Render(serverName),
+		divider,
+		dimStyle.Render("Navigation:"),
 	}
 	lines = append(lines, navItems...)
 	lines = append(lines,
 		"",
+		divider,
+		dimStyle.Render("Status:"),
 		dimStyle.Render(" Latency:")+latency,
 		dimStyle.Render(" MPV:")+mpvStatus,
 		dimStyle.Render(" Log:")+logStatus,
 		"",
-		dimStyle.Render(" "+m.status),
+		dimStyle.Render(m.status),
 	)
 
 	if m.cursor < len(m.items) {
@@ -1511,55 +1521,56 @@ func (m *Model) renderStatus(width, height int) string {
 				}
 				subs = append(subs, lang+ext)
 			}
-			lines = append(lines, "")
-			lines = append(lines, highlightStyle.Render(" Subtitles:"))
-			subLine := " " + strings.Join(subs, " ")
-			if len(subLine) > width-2 {
-				subLine = subLine[:width-2]
+			lines = append(lines, "", divider)
+			lines = append(lines, highlightStyle.Render("Subtitles:"))
+			subLine := strings.Join(subs, " ")
+			if len(subLine) > width-4 {
+				subLine = subLine[:width-4]
 			}
 			lines = append(lines, dimStyle.Render(subLine))
 		}
 	}
 
 	if m.lastPlayPosition > 0 {
-		lines = append(lines, "")
-		lines = append(lines, highlightStyle.Render(" Last Play:"))
-		lines = append(lines, dimStyle.Render(fmt.Sprintf(" %s", formatDuration(m.lastPlayPosition))))
+		lines = append(lines, "", divider)
+		lines = append(lines, highlightStyle.Render("Last Play:"))
+		lines = append(lines, dimStyle.Render(formatDuration(m.lastPlayPosition)))
 		reportStatus := "OK"
 		if !m.lastReportOK {
 			reportStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("FAIL")
 		}
-		lines = append(lines, dimStyle.Render(" Report: ")+reportStatus)
+		lines = append(lines, dimStyle.Render("Report: ")+reportStatus)
 	}
 
 	// 显示系列导航信息
 	if m.cursor < len(m.items) {
 		curItem := m.items[m.cursor]
 		if curItem.Type == "Episode" && curItem.SeriesName != "" {
-			lines = append(lines, "")
-			lines = append(lines, highlightStyle.Render(" Series:"))
-			lines = append(lines, dimStyle.Render(" "+curItem.SeriesName))
+			lines = append(lines, "", divider)
+			lines = append(lines, highlightStyle.Render("Series:"))
+			lines = append(lines, dimStyle.Render(curItem.SeriesName))
 			if curItem.SeasonName != "" {
-				lines = append(lines, dimStyle.Render(" "+curItem.SeasonName))
+				lines = append(lines, dimStyle.Render(curItem.SeasonName))
 			}
 		}
 	}
 
 	lines = append(lines,
 		"",
-		dimStyle.Render(" Keys:"),
-		dimStyle.Render(" j/k  move"),
-		dimStyle.Render(" enter select"),
-		dimStyle.Render(" esc  back"),
-		dimStyle.Render(" f    fav"),
-		dimStyle.Render(" s    season"),
-		dimStyle.Render(" S    series"),
-		dimStyle.Render(" c    continuous"),
-		dimStyle.Render(" d    debug"),
-		dimStyle.Render(" r    refresh"),
-		dimStyle.Render(" m    servers"),
-		dimStyle.Render(" /    search"),
-		dimStyle.Render(" q    quit"),
+		divider,
+		dimStyle.Render("Keys:"),
+		dimStyle.Render(" ←→  move"),
+		dimStyle.Render(" ↵   select"),
+		dimStyle.Render(" esc back"),
+		dimStyle.Render(" f   fav"),
+		dimStyle.Render(" s   season"),
+		dimStyle.Render(" S   series"),
+		dimStyle.Render(" c   continuous"),
+		dimStyle.Render(" d   debug"),
+		dimStyle.Render(" r   refresh"),
+		dimStyle.Render(" m   servers"),
+		dimStyle.Render(" /   search"),
+		dimStyle.Render(" q   quit"),
 	)
 
 	return style.Render(strings.Join(lines, "\n"))
