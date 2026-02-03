@@ -49,7 +49,7 @@
     --accent-foreground: #fafafa;
     --destructive: #ef4444;
     --destructive-foreground: #ffffff;
-    --ring: #fafafa;
+    --ring: #3f3f46;
 
     --hover-bg: rgba(255, 255, 255, 0.05);
     --active-bg: rgba(255, 255, 255, 0.1);
@@ -73,7 +73,7 @@
         --accent-foreground: #fafafa;
         --destructive: #ef4444;
         --destructive-foreground: #ffffff;
-        --ring: #fafafa;
+        --ring: #3f3f46;
 
         --hover-bg: rgba(255, 255, 255, 0.05);
         --active-bg: rgba(255, 255, 255, 0.1);
@@ -159,6 +159,7 @@ a:hover { opacity: 0.7; }
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme]) .navbar {
         background-color: rgba(9, 9, 11, 0.8);
+        border-bottom-color: rgba(39, 39, 42, 0.5);
     }
 }
 
@@ -257,6 +258,8 @@ a:hover { opacity: 0.7; }
     border-color: var(--border) !important;
 }
 
+/* Dark mode secondary button uses default colors */
+
 .btn-ghost {
     background-color: transparent !important;
     color: var(--muted-foreground);
@@ -328,11 +331,13 @@ a:hover { opacity: 0.7; }
 
 /* ========== Search Bar ========== */
 .search-bar {
-    background-color: var(--card);
+    background-color: var(--background);
     border-bottom: 1px solid var(--border);
     padding: 1rem 0;
     animation: slideDown 0.2s ease;
 }
+
+/* Dark mode search bar uses default card color */
 
 @keyframes slideDown {
     from { opacity: 0; transform: translateY(-10px); }
@@ -363,6 +368,8 @@ a:hover { opacity: 0.7; }
     color: var(--foreground);
     transition: all 0.2s ease;
 }
+
+/* Dark mode search input uses default colors */
 
 .search-input-wrapper input:focus {
     outline: none;
@@ -490,6 +497,8 @@ a:hover { opacity: 0.7; }
 .media-card:hover .media-poster {
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
 }
+
+/* Dark mode poster shadow uses default */
 
 .media-poster {
     position: relative;
@@ -666,10 +675,12 @@ a:hover { opacity: 0.7; }
     bottom: 0;
     left: 0;
     right: 0;
-    background-color: var(--card);
+    background-color: var(--background);
     border-top: 1px solid var(--border);
     z-index: 40;
 }
+
+/* Dark mode status bar uses default card color */
 
 .status-bar-inner {
     max-width: 1400px;
@@ -735,7 +746,10 @@ a:hover { opacity: 0.7; }
     display: flex;
     flex-direction: column;
     animation: modalIn 0.2s ease;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
 }
+
+/* Dark mode modal uses default card color */
 
 @keyframes modalIn {
     from { opacity: 0; transform: scale(0.95); }
@@ -792,6 +806,8 @@ a:hover { opacity: 0.7; }
     transition: all 0.2s ease;
 }
 
+/* Dark mode server items use default colors */
+
 .server-item:hover {
     border-color: var(--muted-foreground);
     background-color: var(--hover-bg);
@@ -831,6 +847,8 @@ a:hover { opacity: 0.7; }
     color: var(--muted-foreground);
 }
 
+/* Dark mode server latency uses default colors */
+
 .server-item-latency.good { color: var(--success-color); }
 .server-item-latency.medium { color: var(--warning-color); }
 .server-item-latency.bad { color: var(--error-color); }
@@ -860,6 +878,8 @@ a:hover { opacity: 0.7; }
     transition: all 0.2s ease;
 }
 
+/* Dark mode form inputs use default colors */
+
 .form-group input:focus,
 .form-group select:focus {
     outline: none;
@@ -883,6 +903,8 @@ a:hover { opacity: 0.7; }
     border-bottom: 1px solid var(--border);
     background-color: var(--card);
 }
+
+/* Dark mode player header uses default card color */
 
 .player-header h3 {
     margin: 0;
@@ -1004,6 +1026,8 @@ a:hover { opacity: 0.7; }
     border-top: 1px solid var(--border);
 }
 
+/* Dark mode external players bar uses default card color */
+
 .external-players-label {
     font-size: 0.75rem;
     font-weight: 500;
@@ -1061,7 +1085,7 @@ a:hover { opacity: 0.7; }
 
 /* MPV Icon specific styling */
 .mpv-icon {
-    background: linear-gradient(135deg, #1a1a1a 0%, #333333 100%);
+    background: linear-gradient(135deg, #f0f0f0 0%, #e0e0e0 100%);
     border-radius: 6px;
     padding: 3px;
     display: flex;
@@ -1069,10 +1093,24 @@ a:hover { opacity: 0.7; }
     justify-content: center;
 }
 
+/* Dark mode mpv icon uses default colors */
+
+.mpv-icon img,
 .mpv-icon svg {
-    width: 14px;
-    height: 14px;
-    color: white;
+    width: 20px;
+    height: 20px;
+    color: #18181b;
+}
+
+/* Dark mode: invert MPV icon */
+[data-theme="dark"] .mpv-icon img {
+    filter: invert(1);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .mpv-icon img {
+        filter: invert(1);
+    }
 }
 
 /* Player Button with Menu (Series) */
@@ -1093,6 +1131,8 @@ a:hover { opacity: 0.7; }
     display: none;
     z-index: 10;
 }
+
+/* Dark mode player button menu uses default card color */
 
 .player-btn-series.active .player-btn-menu {
     display: block;
@@ -1119,6 +1159,8 @@ a:hover { opacity: 0.7; }
     background-color: var(--card);
 }
 
+/* Dark mode player footer uses default card color */
+
 .player-info {
     font-size: 0.875rem;
     color: var(--muted-foreground);
@@ -1138,6 +1180,8 @@ a:hover { opacity: 0.7; }
     background-color: var(--muted);
     color: var(--muted-foreground);
 }
+
+/* Dark mode subtitle tag uses default colors */
 
 /* ========== Toast ========== */
 .toast-container {
@@ -1163,6 +1207,8 @@ a:hover { opacity: 0.7; }
     max-width: 400px;
     animation: toastIn 0.2s ease;
 }
+
+/* Dark mode toast uses default card color */
 
 @keyframes toastIn {
     from { opacity: 0; transform: translateX(100%); }
@@ -1271,3 +1317,30 @@ a:hover { opacity: 0.7; }
 .mb-4 { margin-bottom: 1rem; }
 .mt-4 { margin-top: 1rem; }
 .hidden { display: none !important; }
+
+/* ========== Dark Mode Overrides ========== */
+
+/* Modal overlay - deeper in dark mode */
+[data-theme="dark"] .modal-overlay,
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .modal-overlay {
+        background-color: rgba(0, 0, 0, 0.8);
+    }
+}
+
+/* Media action button - use solid dark background */
+[data-theme="dark"] .media-action-btn,
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .media-action-btn {
+        background-color: rgba(0, 0, 0, 0.8);
+    }
+}
+
+/* Media badge - use solid dark background */
+[data-theme="dark"] .media-badge,
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .media-badge {
+        background-color: rgba(0, 0, 0, 0.7);
+        color: #fafafa;
+    }
+}
