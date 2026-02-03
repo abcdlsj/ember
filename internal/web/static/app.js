@@ -816,20 +816,23 @@ const app = {
     },
     
     async deleteServer(index) {
-        if (!confirm('Are you sure you want to delete this server?')) return;
-        
-        try {
-            const response = await fetch(`/api/servers/${index}`, { method: 'DELETE' });
-            
-            if (response.ok) {
-                this.showToast('Server deleted', 'success');
-                this.fetchServers();
-            } else {
-                this.showError('Failed to delete server');
+        this.showConfirm(
+            '确定要删除这个服务器吗？此操作不可撤销。',
+            async () => {
+                try {
+                    const response = await fetch(`/api/servers/${index}`, { method: 'DELETE' });
+                    
+                    if (response.ok) {
+                        this.showToast('Server deleted', 'success');
+                        this.fetchServers();
+                    } else {
+                        this.showError('Failed to delete server');
+                    }
+                } catch (error) {
+                    this.showError('Failed to delete server');
+                }
             }
-        } catch (error) {
-            this.showError('Failed to delete server');
-        }
+        );
     },
     
     async selectServer(index) {
@@ -973,6 +976,67 @@ const app = {
     
     showError(message) {
         this.showToast(message, 'error');
+    },
+    
+    // Confirm dialog
+    showConfirm(message, onConfirm, onCancel) {
+        // Create modal if not exists
+        let modal = document.getElementById('confirm-modal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'confirm-modal';
+            modal.className = 'modal';
+            modal.style.display = 'none';
+            modal.innerHTML = `
+                <div class="modal-overlay" onclick="app.closeConfirm()"></div>
+                <div class="modal-content" style="max-width: 400px;">
+                    <div class="modal-header">
+                        <h3>确认操作</h3>
+                        <button class="btn btn-ghost btn-icon" onclick="app.closeConfirm()">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="modal-body">
+                        <p id="confirm-message" style="color: var(--muted-foreground); margin: 0;"></p>
+                    </div>
+                    <div class="modal-footer" style="justify-content: flex-end; gap: 0.75rem;">
+                        <button class="btn btn-secondary" onclick="app.closeConfirm()">取消</button>
+                        <button class="btn btn-destructive" id="confirm-btn">确认</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+        
+        // Set message
+        document.getElementById('confirm-message').textContent = message;
+        
+        // Set confirm action
+        const confirmBtn = document.getElementById('confirm-btn');
+        confirmBtn.onclick = () => {
+            this.closeConfirm();
+            if (onConfirm) onConfirm();
+        };
+        
+        // Store cancel callback
+        this._onConfirmCancel = onCancel;
+        
+        // Show modal
+        modal.style.display = 'block';
+    },
+    
+    closeConfirm() {
+        const modal = document.getElementById('confirm-modal');
+        if (modal) {
+            modal.style.display = 'none';
+        }
+        if (this._onConfirmCancel) {
+            this._onConfirmCancel();
+            this._onConfirmCancel = null;
+        }
     },
     
     formatDuration(ticks) {
