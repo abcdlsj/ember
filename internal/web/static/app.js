@@ -200,8 +200,8 @@ const app = {
         return `
             <div class="media-card animate-fade-in" onclick="app.selectItem('${item.id}')">
                 <div class="media-poster">
-                    ${item.imageUrl 
-                        ? `<img src="${item.imageUrl}" alt="${item.name}" loading="lazy">`
+                    ${item.imageUrlHigh 
+                        ? `<img src="${item.imageUrlHigh}" alt="${item.name}" loading="lazy">`
                         : `<div class="media-poster-placeholder">${typeLabels[item.type] || item.type}</div>`
                     }
                     ${hasProgress ? `
@@ -594,7 +594,7 @@ const app = {
             const result = await response.json();
             
             if (response.ok) {
-                const msg = fromStart ? 'MPV 从第一集开始播放' : 'MPV 从当前集播放整部剧';
+                const msg = fromStart ? 'MPV 从第一集开始播放' : 'MPV 从当前集播放整季';
                 this.showToast(msg, 'success');
                 this.closePlayer();
             } else {

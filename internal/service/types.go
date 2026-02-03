@@ -21,7 +21,8 @@ type MediaItem struct {
 	IndexNumber     int        `json:"indexNumber,omitempty"`
 	Overview        string     `json:"overview,omitempty"`
 	RunTimeTicks    int64      `json:"runTimeTicks,omitempty"`
-	ImageURL        string     `json:"imageUrl,omitempty"`
+	ImageURL        string     `json:"imageUrl,omitempty"`      // 400px for TUI
+	ImageURLHigh    string     `json:"imageUrlHigh,omitempty"`  // 800px for Web UI
 	BackdropURL     string     `json:"backdropUrl,omitempty"`
 	UserData        *UserData  `json:"userData,omitempty"`
 	MediaSources    []MediaSource `json:"mediaSources,omitempty"`
@@ -173,6 +174,7 @@ type PlaylistEpisode struct {
 // convertAPIItem converts an API MediaItem to service MediaItem
 func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 	imageURL := ""
+	imageURLHigh := ""
 	if item.ImageTags.Primary != "" || item.SeriesID != "" || item.SeasonID != "" {
 		imageID := item.ID
 		if item.ImageTags.Primary == "" {
@@ -185,6 +187,8 @@ func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 			}
 		}
 		imageURL = fmt.Sprintf("%s/emby/Items/%s/Images/Primary?maxWidth=400&api_key=%s",
+			imageBaseURL, imageID, token)
+		imageURLHigh = fmt.Sprintf("%s/emby/Items/%s/Images/Primary?maxWidth=800&api_key=%s",
 			imageBaseURL, imageID, token)
 	}
 
@@ -235,6 +239,7 @@ func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 		Overview:     item.Overview,
 		RunTimeTicks: item.RunTimeTicks,
 		ImageURL:     imageURL,
+		ImageURLHigh: imageURLHigh,
 		BackdropURL:  backdropURL,
 		UserData:     userData,
 		MediaSources: mediaSources,

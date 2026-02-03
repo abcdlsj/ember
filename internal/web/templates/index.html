@@ -276,21 +276,15 @@
                     <div class="external-players-list">
                         <button class="player-btn" id="mpv-btn" onclick="app.startMPVPlay()" title="MPV 播放">
                             <div class="player-btn-icon mpv-icon">
-                                <!-- MPV Official Logo: Equilateral triangle pointing right -->
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="currentColor">
-                                    <path d="M4 2 L28 16 L4 30 Z"/>
-                                </svg>
+                                <img src="/static/mpv-icon.svg" alt="MPV" width="24" height="24">
                             </div>
                             <span class="player-btn-name">MPV</span>
                         </button>
                         <button class="player-btn player-btn-series" id="mpv-series-btn" onclick="app.toggleSeriesOptions(event)" title="MPV 播放选项">
                             <div class="player-btn-icon mpv-icon">
-                                <!-- MPV Official Logo: Equilateral triangle pointing right -->
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="currentColor">
-                                    <path d="M4 2 L28 16 L4 30 Z"/>
-                                </svg>
+                                <img src="/static/mpv-icon.svg" alt="MPV" width="24" height="24">
                             </div>
-                            <span class="player-btn-name">整部剧</span>
+                            <span class="player-btn-name">MPV（整季）</span>
                             <div class="player-btn-menu" id="series-play-menu">
                                 <div class="player-menu-item" onclick="app.startMPVPlaySeries(false)">
                                     <span>从当前集播放</span>
