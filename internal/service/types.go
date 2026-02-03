@@ -80,6 +80,9 @@ type MediaList struct {
 type StreamInfo struct {
 	ItemID       string         `json:"itemId"`
 	Name         string         `json:"name"`
+	SeriesID     string         `json:"seriesId,omitempty"`
+	SeriesName   string         `json:"seriesName,omitempty"`
+	Type         string         `json:"type"`
 	StreamURL    string         `json:"streamUrl"`
 	PosterURL    string         `json:"posterUrl,omitempty"`
 	Container    string         `json:"container,omitempty"`
@@ -133,6 +136,38 @@ type Pagination struct {
 // FavoriteResult represents the result of a favorite toggle
 type FavoriteResult struct {
 	IsFavorite bool `json:"isFavorite"`
+}
+
+// PlayRequest represents a play request for MPV
+type PlayRequest struct {
+	ItemID string `json:"itemId"`
+}
+
+// PlaySeriesRequest represents a play series request for MPV
+type PlaySeriesRequest struct {
+	SeriesID       string `json:"seriesId"`
+	StartEpisodeID string `json:"startEpisodeId,omitempty"`
+}
+
+// PlayResult represents the result of a play operation
+type PlayResult struct {
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+}
+
+// EpisodePlaylist represents a playlist of episodes for series playback
+type EpisodePlaylist struct {
+	SeriesID  string           `json:"seriesId"`
+	SeriesName string          `json:"seriesName"`
+	Episodes  []PlaylistEpisode `json:"episodes"`
+}
+
+// PlaylistEpisode represents a single episode in a playlist
+type PlaylistEpisode struct {
+	ItemID    string `json:"itemId"`
+	Name      string `json:"name"`
+	Index     int    `json:"index"`
+	StreamURL string `json:"streamUrl"`
 }
 
 // convertAPIItem converts an API MediaItem to service MediaItem

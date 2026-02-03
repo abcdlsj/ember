@@ -13,6 +13,7 @@ const app = {
     currentItem: null,
     searchQuery: '',
     isSearchOpen: false,
+    mpvAvailable: false,
     
     // DOM Elements
     elements: {},
@@ -47,11 +48,18 @@ const app = {
             serverForm: document.getElementById('server-form'),
             serverModalFooter: document.getElementById('server-modal-footer'),
             playerModal: document.getElementById('player-modal'),
+            videoContainer: document.getElementById('video-container'),
+            videoPoster: document.getElementById('video-poster'),
+            posterImage: document.getElementById('poster-image'),
             videoPlayer: document.getElementById('video-player'),
             playerTitle: document.getElementById('player-title'),
             playerInfo: document.getElementById('player-info'),
             playerSubtitles: document.getElementById('player-subtitles'),
             playerFavBtn: document.getElementById('player-fav-btn'),
+            externalPlayersBar: document.getElementById('external-players-bar'),
+            mpvBtn: document.getElementById('mpv-btn'),
+            mpvSeriesBtn: document.getElementById('mpv-series-btn'),
+            seriesPlayMenu: document.getElementById('series-play-menu'),
             serverName: document.getElementById('server-name'),
             serverStatus: document.getElementById('server-status'),
             latency: document.getElementById('latency'),
@@ -429,7 +437,16 @@ const app = {
         
         const video = this.elements.videoPlayer;
         video.src = data.streamUrl;
-        video.poster = data.posterUrl || '';
+        
+        // Set poster image
+        if (data.posterUrl) {
+            this.elements.posterImage.src = data.posterUrl;
+        } else {
+            this.elements.posterImage.src = '';
+        }
+        
+        // Reset video container state
+        this.elements.videoContainer.classList.remove('playing');
         
         // Add subtitles
         this.elements.playerSubtitles.innerHTML = '';
@@ -459,6 +476,57 @@ const app = {
         if (data.duration) info.push(this.formatDuration(data.duration));
         this.elements.playerInfo.textContent = info.join(' • ');
         
+        // Setup external players bar
+        this.setupExternalPlayers();
+        
+        // Handle video end
+        video.onended = () => {
+            this.reportPlayback('stop', data.itemId, Math.floor(video.duration * 10000000));
+        };
+    },
+    
+    setupExternalPlayers() {
+        // Show/hide MPV button based on availability
+        this.elements.mpvBtn.style.display = this.mpvAvailable ? 'flex' : 'none';
+        
+        // Check if current item is an episode (part of a series)
+        const isEpisode = this.currentItem && this.currentItem.type === 'Episode';
+        
+        this.elements.mpvSeriesBtn.style.display = (this.mpvAvailable && isEpisode) ? 'flex' : 'none';
+        
+        // Hide entire bar if no external players available
+        const hasExternalPlayers = this.mpvAvailable;
+        this.elements.externalPlayersBar.style.display = hasExternalPlayers ? 'flex' : 'none';
+    },
+    
+    toggleSeriesOptions(event) {
+        event.stopPropagation();
+        const btn = this.elements.mpvSeriesBtn;
+        const isActive = btn.classList.contains('active');
+        
+        // Close all other menus first
+        document.querySelectorAll('.player-btn-series').forEach(b => b.classList.remove('active'));
+        
+        if (!isActive) {
+            btn.classList.add('active');
+            // Close menu when clicking outside
+            const closeMenu = (e) => {
+                if (!btn.contains(e.target)) {
+                    btn.classList.remove('active');
+                    document.removeEventListener('click', closeMenu);
+                }
+            };
+            setTimeout(() => document.addEventListener('click', closeMenu), 0);
+        }
+    },
+    
+    startBrowserPlay() {
+        // Switch to playing state
+        this.elements.videoContainer.classList.add('playing');
+        
+        const video = this.elements.videoPlayer;
+        const data = this.currentItem;
+        
         // Start playback
         video.play().catch(() => {});
         
@@ -471,11 +539,70 @@ const app = {
                 this.reportPlayback('progress', data.itemId, Math.floor(video.currentTime * 10000000));
             }
         }, 30000);
+    },
+    
+    async startMPVPlay() {
+        const data = this.currentItem;
+        if (!data) return;
         
-        // Handle video end
-        video.onended = () => {
-            this.reportPlayback('stop', data.itemId, Math.floor(video.duration * 10000000));
-        };
+        try {
+            const response = await fetch('/api/play', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ itemId: data.itemId })
+            });
+            
+            const result = await response.json();
+            
+            if (response.ok) {
+                this.showToast('MPV 播放已启动', 'success');
+                this.closePlayer();
+            } else {
+                this.showError(result.error || 'MPV 播放失败');
+            }
+        } catch (error) {
+            this.showError('MPV 播放请求失败');
+        }
+    },
+    
+    async startMPVPlaySeries(fromStart = false) {
+        const data = this.currentItem;
+        if (!data) return;
+        
+        // Close the menu
+        this.elements.mpvSeriesBtn.classList.remove('active');
+        
+        // Get series ID from current item
+        const seriesId = data.seriesId;
+        const startEpisodeId = fromStart ? null : data.itemId;
+        
+        if (!seriesId) {
+            this.showError('无法获取剧集信息');
+            return;
+        }
+        
+        try {
+            const response = await fetch('/api/play-series', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    seriesId: seriesId,
+                    startEpisodeId: startEpisodeId 
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (response.ok) {
+                const msg = fromStart ? 'MPV 从第一集开始播放' : 'MPV 从当前集播放整部剧';
+                this.showToast(msg, 'success');
+                this.closePlayer();
+            } else {
+                this.showError(result.error || 'MPV 播放失败');
+            }
+        } catch (error) {
+            this.showError('MPV 播放请求失败');
+        }
     },
     
     closePlayer() {
@@ -496,6 +623,14 @@ const app = {
         video.pause();
         video.src = '';
         video.innerHTML = '';
+        
+        // Reset video container state
+        this.elements.videoContainer.classList.remove('playing');
+        
+        // Close any open menus
+        if (this.elements.mpvSeriesBtn) {
+            this.elements.mpvSeriesBtn.classList.remove('active');
+        }
         
         this.elements.playerModal.style.display = 'none';
         this.currentItem = null;
@@ -776,6 +911,7 @@ const app = {
         this.elements.latency.textContent = data.latency ? `${data.latency}ms` : '--';
         
         // MPV status
+        this.mpvAvailable = data.mpvAvailable;
         this.elements.mpvText.textContent = data.mpvAvailable ? 'Available' : 'Not found';
         this.elements.mpvText.style.color = data.mpvAvailable ? 'var(--success-color)' : 'var(--error-color)';
     },

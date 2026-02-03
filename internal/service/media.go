@@ -2,11 +2,10 @@ package service
 
 import (
 	"fmt"
-	"os/exec"
-
 	"time"
 
 	"ember/internal/api"
+	"ember/internal/player"
 	"ember/internal/storage"
 )
 
@@ -221,6 +220,9 @@ func (s *MediaService) GetStreamInfo(itemID string) (*StreamInfo, error) {
 	return &StreamInfo{
 		ItemID:        itemID,
 		Name:          item.Name,
+		SeriesID:      item.SeriesID,
+		SeriesName:    item.SeriesName,
+		Type:          item.Type,
 		StreamURL:     s.client.StreamURL(itemID, ms.ID, ms.Container),
 		PosterURL:     s.client.ImageURLByID(itemID, 800),
 		Container:     ms.Container,
@@ -428,8 +430,7 @@ func (s *MediaService) GetServerStatus() *ServerStatus {
 
 // IsMpvAvailable checks if mpv player is available
 func (s *MediaService) IsMpvAvailable() bool {
-	_, err := exec.LookPath("mpv")
-	return err == nil
+	return player.Available()
 }
 
 // ==================== Helper Methods ====================
@@ -453,4 +454,142 @@ func generateSessionID() string {
 // GetItemRaw returns the raw API item (for advanced use cases)
 func (s *MediaService) GetItemRaw(itemID string) (*api.MediaItem, error) {
 	return s.client.GetItem(itemID)
+}
+
+// ==================== MPV Playback Operations ====================
+
+// PlayWithMPV plays a single item with MPV
+func (s *MediaService) PlayWithMPV(itemID string) (*PlayResult, error) {
+	if !player.Available() {
+		return nil, fmt.Errorf("mpv player not available")
+	}
+
+	item, err := s.client.GetItem(itemID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get item: %w", err)
+	}
+
+	if len(item.MediaSources) == 0 {
+		return nil, fmt.Errorf("no media source available")
+	}
+
+	ms := item.MediaSources[0]
+	streamURL := s.client.StreamURL(itemID, ms.ID, ms.Container)
+
+	// Build subtitle URLs
+	var subtitleURLs []string
+	for _, stream := range ms.MediaStreams {
+		if stream.Type == "Subtitle" && stream.IsExternal {
+			subURL := fmt.Sprintf("%s/emby/Videos/%s/%s/Subtitles/%d/Stream.%s?api_key=%s",
+				s.client.Server, itemID, ms.ID, stream.Index, stream.Codec, s.client.Token)
+			subtitleURLs = append(subtitleURLs, subURL)
+		}
+	}
+
+	// Get saved playback position
+	positionSec := s.store.GetPlaybackPosition(itemID)
+
+	// Start playback in a goroutine so it doesn't block
+	go func() {
+		result := player.Play(streamURL, item.Name, subtitleURLs, positionSec)
+		if result.Err != nil {
+			return
+		}
+		// Save playback position after MPV closes
+		durationSec := int64(0)
+		if item.RunTimeTicks > 0 {
+			durationSec = item.RunTimeTicks / 10000000
+		}
+		s.store.UpdatePlaybackPosition(itemID, result.PositionSec, durationSec)
+	}()
+
+	return &PlayResult{Success: true, Message: "Playback started in MPV"}, nil
+}
+
+// GetSeriesPlaylist returns all episodes in a series for playlist playback
+func (s *MediaService) GetSeriesPlaylist(seriesID string) (*EpisodePlaylist, error) {
+	// Get series info
+	series, err := s.client.GetItem(seriesID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get series: %w", err)
+	}
+
+	// Get all seasons
+	seasons, err := s.client.GetSeasons(seriesID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get seasons: %w", err)
+	}
+
+	var allEpisodes []PlaylistEpisode
+	for _, season := range seasons {
+		episodes, err := s.client.GetEpisodes(seriesID, season.ID)
+		if err != nil {
+			continue
+		}
+		for _, ep := range episodes {
+			if len(ep.MediaSources) == 0 {
+				continue
+			}
+			ms := ep.MediaSources[0]
+			streamURL := s.client.StreamURL(ep.ID, ms.ID, ms.Container)
+			allEpisodes = append(allEpisodes, PlaylistEpisode{
+				ItemID:    ep.ID,
+				Name:      ep.Name,
+				Index:     ep.IndexNumber,
+				StreamURL: streamURL,
+			})
+		}
+	}
+
+	return &EpisodePlaylist{
+		SeriesID:   seriesID,
+		SeriesName: series.Name,
+		Episodes:   allEpisodes,
+	}, nil
+}
+
+// PlaySeriesWithMPV plays a series with MPV from a specific episode
+func (s *MediaService) PlaySeriesWithMPV(seriesID, startEpisodeID string) (*PlayResult, error) {
+	if !player.Available() {
+		return nil, fmt.Errorf("mpv player not available")
+	}
+
+	playlist, err := s.GetSeriesPlaylist(seriesID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(playlist.Episodes) == 0 {
+		return nil, fmt.Errorf("no episodes found")
+	}
+
+	// Build URL list and find start index
+	var urls []string
+	startIndex := 0
+	for i, ep := range playlist.Episodes {
+		urls = append(urls, ep.StreamURL)
+		if ep.ItemID == startEpisodeID {
+			startIndex = i
+		}
+	}
+
+	// Get position for the start episode
+	positionSec := int64(0)
+	if startIndex < len(playlist.Episodes) {
+		positionSec = s.store.GetPlaybackPosition(playlist.Episodes[startIndex].ItemID)
+	}
+
+	// Start playback in a goroutine
+	go func() {
+		result := player.PlayMultiple(urls, playlist.SeriesName, nil, positionSec, startIndex)
+		if result.Err != nil {
+			return
+		}
+		// Save playback position for the last played episode
+		if startIndex < len(playlist.Episodes) {
+			s.store.UpdatePlaybackPosition(playlist.Episodes[startIndex].ItemID, result.PositionSec, 0)
+		}
+	}()
+
+	return &PlayResult{Success: true, Message: fmt.Sprintf("Started playing %s from episode %d", playlist.SeriesName, startIndex+1)}, nil
 }

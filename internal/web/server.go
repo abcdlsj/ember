@@ -50,6 +50,11 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/api/playback", s.handlePlayback)
 	s.router.HandleFunc("/api/favorite", s.handleFavorite)
 
+	// MPV playback routes
+	s.router.HandleFunc("/api/play", s.handlePlayMPV)
+	s.router.HandleFunc("/api/play-series", s.handlePlaySeriesMPV)
+	s.router.HandleFunc("/api/playlist", s.handleGetPlaylist)
+
 	// Server management
 	s.router.HandleFunc("/api/servers", s.handleServers)
 	s.router.HandleFunc("/api/servers/", s.handleServerDetail)
@@ -228,6 +233,76 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, result)
+}
+
+// ==================== MPV Playback Handlers ====================
+
+func (s *Server) handlePlayMPV(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req service.PlayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.ItemID == "" {
+		respondError(w, http.StatusBadRequest, "itemId required")
+		return
+	}
+
+	result, err := s.svc.PlayWithMPV(req.ItemID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondJSON(w, result)
+}
+
+func (s *Server) handlePlaySeriesMPV(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req service.PlaySeriesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.SeriesID == "" {
+		respondError(w, http.StatusBadRequest, "seriesId required")
+		return
+	}
+
+	result, err := s.svc.PlaySeriesWithMPV(req.SeriesID, req.StartEpisodeID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondJSON(w, result)
+}
+
+func (s *Server) handleGetPlaylist(w http.ResponseWriter, r *http.Request) {
+	seriesID := r.URL.Query().Get("seriesId")
+	if seriesID == "" {
+		respondError(w, http.StatusBadRequest, "seriesId required")
+		return
+	}
+
+	playlist, err := s.svc.GetSeriesPlaylist(seriesID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondJSON(w, playlist)
 }
 
 // ==================== Server Management Handlers ====================

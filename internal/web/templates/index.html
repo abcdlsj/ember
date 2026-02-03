@@ -255,7 +255,53 @@
                 </div>
             </div>
             <div class="player-body">
-                <video id="video-player" controls></video>
+                <!-- Video Container with Poster & Play Button -->
+                <div id="video-container" class="video-container">
+                    <div class="video-poster" id="video-poster">
+                        <img id="poster-image" src="" alt="Poster">
+                        <div class="video-poster-overlay">
+                            <button class="btn-play-main" onclick="app.startBrowserPlay()" title="浏览器播放">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <video id="video-player" controls></video>
+                </div>
+                
+                <!-- External Players Bar -->
+                <div class="external-players-bar" id="external-players-bar">
+                    <div class="external-players-label">外部播放器</div>
+                    <div class="external-players-list">
+                        <button class="player-btn" id="mpv-btn" onclick="app.startMPVPlay()" title="MPV 播放">
+                            <div class="player-btn-icon mpv-icon">
+                                <!-- MPV Official Logo: Equilateral triangle pointing right -->
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="currentColor">
+                                    <path d="M4 2 L28 16 L4 30 Z"/>
+                                </svg>
+                            </div>
+                            <span class="player-btn-name">MPV</span>
+                        </button>
+                        <button class="player-btn player-btn-series" id="mpv-series-btn" onclick="app.toggleSeriesOptions(event)" title="MPV 播放选项">
+                            <div class="player-btn-icon mpv-icon">
+                                <!-- MPV Official Logo: Equilateral triangle pointing right -->
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="currentColor">
+                                    <path d="M4 2 L28 16 L4 30 Z"/>
+                                </svg>
+                            </div>
+                            <span class="player-btn-name">整部剧</span>
+                            <div class="player-btn-menu" id="series-play-menu">
+                                <div class="player-menu-item" onclick="app.startMPVPlaySeries(false)">
+                                    <span>从当前集播放</span>
+                                </div>
+                                <div class="player-menu-item" onclick="app.startMPVPlaySeries(true)">
+                                    <span>从第一集播放</span>
+                                </div>
+                            </div>
+                        </button>
+                    </div>
+                </div>
             </div>
             <div class="player-footer">
                 <div class="player-info" id="player-info"></div>
