@@ -141,15 +141,30 @@ type playDoneMsg struct {
 
 // New creates a new TUI model
 func New(svc *service.MediaService) *Model {
+	inputTextStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	inputPlaceholderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	inputPromptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	inputCursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
+
 	ti := textinput.New()
+	ti.Prompt = ""
 	ti.Placeholder = "Search..."
 	ti.CharLimit = 100
 	ti.Width = 30
+	ti.TextStyle = inputTextStyle
+	ti.PlaceholderStyle = inputPlaceholderStyle
+	ti.PromptStyle = inputPromptStyle
+	ti.Cursor.Style = inputCursorStyle
 
 	yi := textinput.New()
+	yi.Prompt = ""
 	yi.Placeholder = "Year"
 	yi.CharLimit = 4
 	yi.Width = 8
+	yi.TextStyle = inputTextStyle
+	yi.PlaceholderStyle = inputPlaceholderStyle
+	yi.PromptStyle = inputPromptStyle
+	yi.Cursor.Style = inputCursorStyle
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
