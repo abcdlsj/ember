@@ -1,37 +1,66 @@
-# Emby 终端播放器
+# Ember (TUI Emby Client)
 
-一个基于 TUI 的 Emby 媒体服务器客户端，支持在终端中浏览和播放 Emby 媒体库。
+Ember is a terminal-first Emby client for browsing libraries and playing media from a TUI.
 
-## 功能特性
+## Features
 
-- 📺 媒体库浏览
-- 🔐 Token 自动缓存与刷新
-- 🎬 基于 mpv 的视频播放
-- 🎨 简洁的 TUI 界面
+- Library browsing for movies, series, seasons, and episodes
+- Continue Watching, Favorites, and History sections
+- Advanced search filters (type, played/unplayed, favorite-only, year)
+- Favorite management from list view
+- MPV playback integration with resume support
+- Multi-server management inside the TUI
 
-## 快速开始
+## Requirements
+
+- Go (latest stable recommended)
+- [mpv](https://mpv.io/) installed and available in `PATH`
+
+## Quick Start
+
+Run directly:
 
 ```bash
-export EMBY_SERVER="http://your-server:8096"
-export EMBY_USERNAME="your-username"
-export EMBY_PASSWORD="your-password"
-go run main.go
+go run .
 ```
 
-## 环境变量
+On first launch, open server management in the TUI and add your Emby server.
 
-| 变量 | 说明 |
-|------|------|
-| EMBY_SERVER | Emby 服务器地址 |
-| EMBY_USERNAME | 用户名 |
-| EMBY_PASSWORD | 密码 |
+## Build and Install
 
-## 依赖
+This repository includes a minimal `Makefile`:
 
-- [mpv](https://mpv.io/) - 视频播放器
+```bash
+make build
+make install
+make clean
+```
 
-## 预览
+Default install path:
 
-![界面1](image.png)
+- `~/.local/bin/ember`
 
-![界面2](image2.png)
+Override install prefix if needed:
+
+```bash
+make install PREFIX=/usr/local
+```
+
+## Useful Keys (TUI)
+
+- `1` Continue
+- `2` Favorites
+- `3` History
+- `4` or `/` Advanced Search
+- `p` Play current item
+- `R` Replay current item from beginning
+- `f` Toggle favorite
+- `a` Add favorite
+- `u` Remove favorite
+- `m` Server management
+- `q` Quit
+
+## Screenshots
+
+![Screenshot 1](image.png)
+![Screenshot 2](image2.png)
