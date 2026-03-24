@@ -45,12 +45,12 @@ func (s *MediaService) GetResume(limit int) (*MediaList, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	
+
 	items, err := s.client.GetResumeItems(limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get resume items: %w", err)
 	}
-	
+
 	return &MediaList{
 		Items:    s.convertItems(items),
 		Total:    len(items),
@@ -65,12 +65,12 @@ func (s *MediaService) GetFavorites(limit int) (*MediaList, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	
+
 	items, err := s.client.GetFavorites(limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get favorites: %w", err)
 	}
-	
+
 	return &MediaList{
 		Items:    s.convertItems(items),
 		Total:    len(items),
@@ -86,7 +86,7 @@ func (s *MediaService) GetLibraries() (*MediaList, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get libraries: %w", err)
 	}
-	
+
 	return &MediaList{
 		Items:    s.convertItems(items),
 		Total:    len(items),
@@ -104,12 +104,12 @@ func (s *MediaService) GetItems(parentID string, page, pageSize int) (*MediaList
 	if page < 0 {
 		page = 0
 	}
-	
+
 	items, total, err := s.client.GetItems(parentID, page*pageSize, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get items: %w", err)
 	}
-	
+
 	return &MediaList{
 		Items:    s.convertItems(items),
 		Total:    total,
@@ -125,7 +125,7 @@ func (s *MediaService) GetSeasons(seriesID string) (*MediaList, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get seasons: %w", err)
 	}
-	
+
 	return &MediaList{
 		Items:    s.convertItems(items),
 		Total:    len(items),
@@ -141,7 +141,7 @@ func (s *MediaService) GetEpisodes(seriesID, seasonID string) (*MediaList, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get episodes: %w", err)
 	}
-	
+
 	return &MediaList{
 		Items:    s.convertItems(items),
 		Total:    len(items),
@@ -156,12 +156,12 @@ func (s *MediaService) Search(query string, limit int) (*MediaList, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	
+
 	items, err := s.client.Search(query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
-	
+
 	return &MediaList{
 		Items:    s.convertItems(items),
 		Total:    len(items),
@@ -177,7 +177,7 @@ func (s *MediaService) GetItem(itemID string) (*MediaItem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get item: %w", err)
 	}
-	
+
 	converted := s.convertItem(*item)
 	return &converted, nil
 }
@@ -190,16 +190,16 @@ func (s *MediaService) GetStreamInfo(itemID string) (*StreamInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get item: %w", err)
 	}
-	
+
 	if len(item.MediaSources) == 0 {
 		return nil, fmt.Errorf("no media source available")
 	}
-	
+
 	ms := item.MediaSources[0]
-	
+
 	// Get saved playback position
 	positionSec := s.store.GetPlaybackPosition(itemID)
-	
+
 	// Build subtitle list
 	subtitles := []SubtitleInfo{}
 	for _, stream := range ms.MediaStreams {
@@ -214,9 +214,9 @@ func (s *MediaService) GetStreamInfo(itemID string) (*StreamInfo, error) {
 			})
 		}
 	}
-	
+
 	isFav := item.UserData != nil && item.UserData.IsFavorite
-	
+
 	return &StreamInfo{
 		ItemID:        itemID,
 		Name:          item.Name,
@@ -237,7 +237,7 @@ func (s *MediaService) GetStreamInfo(itemID string) (*StreamInfo, error) {
 // ReportPlayback reports playback progress to the server
 func (s *MediaService) ReportPlayback(req PlaybackRequest) error {
 	sessionID := generateSessionID()
-	
+
 	switch req.Type {
 	case "start":
 		return s.client.ReportPlaybackStart(req.ItemID, "", sessionID, req.PositionTicks)
@@ -263,24 +263,27 @@ func (s *MediaService) ReportPlayback(req PlaybackRequest) error {
 
 // ToggleFavorite toggles favorite status for an item
 func (s *MediaService) ToggleFavorite(itemID string) (*FavoriteResult, error) {
-	item, err := s.client.GetItem(itemID)
+	isFav, err := s.client.IsFavorite(itemID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get item: %w", err)
+		return nil, fmt.Errorf("failed to get favorite status: %w", err)
 	}
-	
-	isFav := item.UserData != nil && item.UserData.IsFavorite
-	
+
 	if isFav {
 		err = s.client.RemoveFavorite(itemID)
 	} else {
 		err = s.client.AddFavorite(itemID)
 	}
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to toggle favorite: %w", err)
 	}
-	
-	return &FavoriteResult{IsFavorite: !isFav}, nil
+
+	// Re-check state to avoid stale UI when server behavior differs by version.
+	finalState, statusErr := s.client.IsFavorite(itemID)
+	if statusErr != nil {
+		return &FavoriteResult{IsFavorite: !isFav}, nil
+	}
+	return &FavoriteResult{IsFavorite: finalState}, nil
 }
 
 // ==================== Server Management ====================
@@ -289,7 +292,7 @@ func (s *MediaService) ToggleFavorite(itemID string) (*FavoriteResult, error) {
 func (s *MediaService) GetServers() []ServerInfo {
 	servers := s.store.GetServers()
 	activeIdx := s.store.GetActiveServerIndex()
-	
+
 	result := make([]ServerInfo, len(servers))
 	for i, srv := range servers {
 		result[i] = ServerInfo{
@@ -301,7 +304,7 @@ func (s *MediaService) GetServers() []ServerInfo {
 			Prefix:   srv.Prefix(),
 		}
 	}
-	
+
 	return result
 }
 
@@ -323,24 +326,24 @@ func (s *MediaService) AddServer(name, url, username, password string) error {
 		Username: username,
 		Password: password,
 	}
-	
+
 	// Test connection
 	client := api.New(srv.URL)
 	if err := client.Login(username, password); err != nil {
 		return fmt.Errorf("login failed: %w", err)
 	}
-	
+
 	srv.UserID = client.UserID
 	srv.Token = client.Token
-	
+
 	s.store.AddServer(srv)
-	
+
 	// If first server, activate it and update service client
 	if len(s.store.GetServers()) == 1 {
 		s.store.SetActiveServer(0)
 		s.client = client
 	}
-	
+
 	return nil
 }
 
@@ -350,7 +353,7 @@ func (s *MediaService) UpdateServer(index int, name, url, username, password str
 	if index < 0 || index >= len(servers) {
 		return fmt.Errorf("server not found")
 	}
-	
+
 	srv := servers[index]
 	srv.Name = name
 	srv.URL = url
@@ -358,7 +361,7 @@ func (s *MediaService) UpdateServer(index int, name, url, username, password str
 	if password != "" {
 		srv.Password = password
 	}
-	
+
 	s.store.UpdateServer(index, srv)
 	return nil
 }
@@ -369,7 +372,7 @@ func (s *MediaService) DeleteServer(index int) error {
 	if index < 0 || index >= len(servers) {
 		return fmt.Errorf("server not found")
 	}
-	
+
 	s.store.DeleteServer(index)
 	return nil
 }
@@ -380,15 +383,15 @@ func (s *MediaService) ActivateServer(index int) error {
 	if index < 0 || index >= len(servers) {
 		return fmt.Errorf("server not found")
 	}
-	
+
 	s.store.SetActiveServer(index)
 	srv := s.store.GetActiveServer()
-	
+
 	// Update client
 	client := api.New(srv.URL)
 	client.UserID = srv.UserID
 	client.Token = srv.Token
-	
+
 	// Verify token
 	if !client.VerifyToken() {
 		if err := client.Login(srv.Username, srv.Password); err != nil {
@@ -396,7 +399,7 @@ func (s *MediaService) ActivateServer(index int) error {
 		}
 		s.store.SaveServerToken(index, client.UserID, client.Token)
 	}
-	
+
 	s.client = client
 	return nil
 }
@@ -413,7 +416,7 @@ func (s *MediaService) GetServerStatus() *ServerStatus {
 	status := &ServerStatus{
 		MpvAvailable: s.IsMpvAvailable(),
 	}
-	
+
 	if srv != nil {
 		status.Server = &ServerInfo{
 			Name:     srv.Name,
@@ -424,7 +427,7 @@ func (s *MediaService) GetServerStatus() *ServerStatus {
 		status.Connected = s.client.VerifyToken()
 		status.Latency = s.client.Latency.Milliseconds()
 	}
-	
+
 	return status
 }
 

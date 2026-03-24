@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"ember/internal/logging"
@@ -375,10 +377,47 @@ func (c *Client) AddFavorite(itemID string) error {
 	return err
 }
 
+func isHTTPStatusError(err error, status int) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), fmt.Sprintf("HTTP %d:", status))
+}
+
 func (c *Client) RemoveFavorite(itemID string) error {
 	endpoint := fmt.Sprintf("/emby/Users/%s/FavoriteItems/%s", c.UserID, itemID)
 	_, err := c.request(context.Background(), "DELETE", endpoint, nil)
-	return err
+	if err == nil {
+		return nil
+	}
+
+	// Backward compatibility for servers that only support legacy unfavorite API.
+	if !isHTTPStatusError(err, http.StatusMethodNotAllowed) &&
+		!isHTTPStatusError(err, http.StatusNotFound) {
+		return err
+	}
+
+	legacyEndpoint := endpoint + "/Delete"
+	_, legacyErr := c.request(context.Background(), "POST", legacyEndpoint, nil)
+	if legacyErr != nil {
+		return errors.Join(err, legacyErr)
+	}
+	return nil
+}
+
+func (c *Client) IsFavorite(itemID string) (bool, error) {
+	params := url.Values{
+		"Ids":       {itemID},
+		"Limit":     {"1"},
+		"Recursive": {"true"},
+		"Filters":   {"IsFavorite"},
+	}
+	endpoint := fmt.Sprintf("/emby/Users/%s/Items?%s", c.UserID, params.Encode())
+	items, err := c.getItems(endpoint)
+	if err != nil {
+		return false, err
+	}
+	return len(items) > 0, nil
 }
 
 func (c *Client) GetFavorites(limit int) ([]MediaItem, error) {
