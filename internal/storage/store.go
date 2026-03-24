@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -76,6 +77,7 @@ func init() {
 }
 
 type Store struct {
+	mu         sync.RWMutex
 	configPath string
 	config     ServerConfig
 	dataPath   string
@@ -124,12 +126,16 @@ func (s *Store) saveConfig() error {
 }
 
 func (s *Store) loadDataForActiveServer() {
-	srv := s.GetActiveServer()
-	if srv == nil {
+	if len(s.config.Servers) == 0 {
 		s.dataPath = ""
 		s.data = ServerData{}
 		return
 	}
+	if s.config.ActiveServer < 0 || s.config.ActiveServer >= len(s.config.Servers) {
+		s.config.ActiveServer = 0
+	}
+
+	srv := s.config.Servers[s.config.ActiveServer]
 
 	prefix := srv.Prefix()
 	s.dataPath = filepath.Join(configDir, "data_"+prefix+".json")
@@ -154,29 +160,39 @@ func (s *Store) saveData() error {
 }
 
 func (s *Store) SetItemMeta(meta ItemMeta) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ensureItemsMap()
 	s.data.Items[meta.ItemID] = meta
-	s.saveData()
+	_ = s.saveData()
 }
 
 func (s *Store) GetItemMeta(itemID string) (ItemMeta, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	meta, ok := s.data.Items[itemID]
 	return meta, ok
 }
 
 func (s *Store) GetMediaDetail(itemID string) (MediaDetail, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	detail, ok := s.data.MediaDetails[itemID]
 	return detail, ok
 }
 
 func (s *Store) SetMediaDetail(detail MediaDetail) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ensureMediaDetailsMap()
 	detail.CachedAt = time.Now().Format(time.RFC3339)
 	s.data.MediaDetails[detail.ItemID] = detail
-	s.saveData()
+	_ = s.saveData()
 }
 
 func (s *Store) UpdatePlaybackPosition(itemID string, positionSec, durationSec int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ensureMediaDetailsMap()
 	detail := s.data.MediaDetails[itemID]
 	detail.ItemID = itemID
@@ -184,64 +200,92 @@ func (s *Store) UpdatePlaybackPosition(itemID string, positionSec, durationSec i
 	detail.DurationSec = durationSec
 	detail.UpdatedAt = time.Now().Format(time.RFC3339)
 	s.data.MediaDetails[itemID] = detail
-	s.saveData()
+	_ = s.saveData()
 }
 
 func (s *Store) GetPlaybackPosition(itemID string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.data.MediaDetails[itemID].PositionSec
 }
 
 func (s *Store) GetServers() []Server {
-	return s.config.Servers
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	servers := make([]Server, len(s.config.Servers))
+	copy(servers, s.config.Servers)
+	return servers
 }
 
 func (s *Store) AddServer(srv Server) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.config.Servers = append(s.config.Servers, srv)
-	s.saveConfig()
+	_ = s.saveConfig()
 }
 
 func (s *Store) UpdateServer(idx int, srv Server) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.validServerIndex(idx) {
 		return
 	}
 	s.config.Servers[idx] = srv
-	s.saveConfig()
+	_ = s.saveConfig()
 }
 
 func (s *Store) DeleteServer(idx int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.validServerIndex(idx) {
 		return
 	}
 	s.config.Servers = append(s.config.Servers[:idx], s.config.Servers[idx+1:]...)
 	s.config.ActiveServer = max(0, min(s.config.ActiveServer, len(s.config.Servers)-1))
-	s.saveConfig()
+	_ = s.saveConfig()
 	s.loadDataForActiveServer()
 }
 
 func (s *Store) GetActiveServer() *Server {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if len(s.config.Servers) == 0 {
 		return nil
 	}
-	if s.config.ActiveServer < 0 || s.config.ActiveServer >= len(s.config.Servers) {
-		s.config.ActiveServer = 0
+	idx := s.config.ActiveServer
+	if idx < 0 || idx >= len(s.config.Servers) {
+		idx = 0
 	}
-	return &s.config.Servers[s.config.ActiveServer]
+	srv := s.config.Servers[idx]
+	return &srv
 }
 
 func (s *Store) SetActiveServer(idx int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.validServerIndex(idx) {
 		return
 	}
 	s.config.ActiveServer = idx
-	s.saveConfig()
+	_ = s.saveConfig()
 	s.loadDataForActiveServer()
 }
 
 func (s *Store) GetActiveServerIndex() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.config.Servers) == 0 {
+		return 0
+	}
+	if s.config.ActiveServer < 0 || s.config.ActiveServer >= len(s.config.Servers) {
+		return 0
+	}
 	return s.config.ActiveServer
 }
 
 func (s *Store) SaveServerToken(idx int, userID, token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.validServerIndex(idx) {
 		return
 	}
@@ -252,5 +296,5 @@ func (s *Store) SaveServerToken(idx int, userID, token string) {
 			s.config.Servers[i].Token = token
 		}
 	}
-	s.saveConfig()
+	_ = s.saveConfig()
 }

@@ -652,21 +652,27 @@ const app = {
         if (!this.currentItem) return;
         
         try {
+            const isFavoriteNow = !!this.currentItem.isFavorite;
+            const method = isFavoriteNow ? 'DELETE' : 'POST';
             const response = await fetch(`/api/favorite?itemId=${this.currentItem.itemId}`, {
-                method: 'POST'
+                method
             });
             const data = await response.json();
             
             if (response.ok) {
+                this.currentItem.isFavorite = data.isFavorite;
                 this.updatePlayerFavButton(data.isFavorite);
                 this.showToast(data.isFavorite ? 'Added to favorites' : 'Removed from favorites', 'success');
                 
                 // Update item in current items
                 const item = this.currentItems.find(i => i.id === this.currentItem.itemId);
-                if (item && item.userData) {
+                if (item) {
+                    if (!item.userData) item.userData = {};
                     item.userData.isFavorite = data.isFavorite;
                     this.renderItems();
                 }
+            } else {
+                this.showError(data.error || 'Failed to toggle favorite');
             }
         } catch (error) {
             this.showError('Failed to toggle favorite');

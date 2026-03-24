@@ -261,6 +261,31 @@ func (s *MediaService) ReportPlayback(req PlaybackRequest) error {
 
 // ==================== Favorite Operations ====================
 
+// SetFavorite ensures the favorite state matches the requested value.
+func (s *MediaService) SetFavorite(itemID string, favorite bool) (*FavoriteResult, error) {
+	isFav, err := s.client.IsFavorite(itemID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get favorite status: %w", err)
+	}
+
+	if favorite && !isFav {
+		if err = s.client.AddFavorite(itemID); err != nil {
+			return nil, fmt.Errorf("failed to add favorite: %w", err)
+		}
+	}
+	if !favorite && isFav {
+		if err = s.client.RemoveFavorite(itemID); err != nil {
+			return nil, fmt.Errorf("failed to remove favorite: %w", err)
+		}
+	}
+
+	finalState, statusErr := s.client.IsFavorite(itemID)
+	if statusErr != nil {
+		return &FavoriteResult{IsFavorite: favorite}, nil
+	}
+	return &FavoriteResult{IsFavorite: finalState}, nil
+}
+
 // ToggleFavorite toggles favorite status for an item
 func (s *MediaService) ToggleFavorite(itemID string) (*FavoriteResult, error) {
 	isFav, err := s.client.IsFavorite(itemID)
@@ -268,22 +293,7 @@ func (s *MediaService) ToggleFavorite(itemID string) (*FavoriteResult, error) {
 		return nil, fmt.Errorf("failed to get favorite status: %w", err)
 	}
 
-	if isFav {
-		err = s.client.RemoveFavorite(itemID)
-	} else {
-		err = s.client.AddFavorite(itemID)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to toggle favorite: %w", err)
-	}
-
-	// Re-check state to avoid stale UI when server behavior differs by version.
-	finalState, statusErr := s.client.IsFavorite(itemID)
-	if statusErr != nil {
-		return &FavoriteResult{IsFavorite: !isFav}, nil
-	}
-	return &FavoriteResult{IsFavorite: finalState}, nil
+	return s.SetFavorite(itemID, !isFav)
 }
 
 // ==================== Server Management ====================

@@ -1,12 +1,18 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 
 	"ember/internal/service"
 )
@@ -16,8 +22,10 @@ var content embed.FS
 
 // Server represents the web server
 type Server struct {
-	svc    *service.MediaService
-	router *http.ServeMux
+	svc         *service.MediaService
+	router      *http.ServeMux
+	indexTmpl   *template.Template
+	templateErr error
 }
 
 // New creates a new web server
@@ -26,6 +34,7 @@ func New(svc *service.MediaService) *Server {
 		svc:    svc,
 		router: http.NewServeMux(),
 	}
+	s.indexTmpl, s.templateErr = template.ParseFS(content, "templates/index.html")
 	s.setupRoutes()
 	return s
 }
@@ -64,7 +73,34 @@ func (s *Server) setupRoutes() {
 // Run starts the web server
 func (s *Server) Run(addr string) error {
 	fmt.Printf("Web server starting on http://%s\n", addr)
-	return http.ListenAndServe(addr, s.router)
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           s.router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := httpServer.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return httpServer.Shutdown(shutdownCtx)
+	}
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -73,14 +109,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmpl, err := template.ParseFS(content, "templates/index.html")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if s.templateErr != nil {
+		http.Error(w, s.templateErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html")
-	tmpl.Execute(w, nil)
+	if err := s.indexTmpl.Execute(w, nil); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 // ==================== Media Handlers ====================
@@ -220,13 +257,19 @@ func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	itemID := r.URL.Query().Get("itemId")
 	if itemID == "" {
 		respondError(w, http.StatusBadRequest, "itemId required")
 		return
 	}
 
-	result, err := s.svc.ToggleFavorite(itemID)
+	targetFavorite := r.Method == http.MethodPost
+	result, err := s.svc.SetFavorite(itemID, targetFavorite)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -451,4 +494,3 @@ func respondError(w http.ResponseWriter, code int, message string) {
 	w.WriteHeader(code)
 	respondJSON(w, map[string]string{"error": message})
 }
-
