@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ type Section int
 const (
 	SectionResume Section = iota
 	SectionFavorites
+	SectionHistory
 	SectionSearch
 )
 
@@ -50,10 +52,14 @@ type Model struct {
 	navStack   []NavState
 	currentLib *service.MediaItem
 
-	searchInput textinput.Model
-	spinner     spinner.Model
-	status      string
-	latency     time.Duration
+	searchInput     textinput.Model
+	searchYearInput textinput.Model
+	searchFocus     int // 0=query, 1=year
+	lastSearchQuery string
+	searchFilters   SearchFilters
+	spinner         spinner.Model
+	status          string
+	latency         time.Duration
 
 	coverCache  map[string]string
 	detailCache map[string]*storage.MediaDetail
@@ -67,13 +73,20 @@ type Model struct {
 	loggingEnabled   bool
 
 	// 服务器管理
-	serverCursor    int
-	serverInputs    []textinput.Model
-	serverFocused   int
-	editingServer   int
-	serverLatencies map[int]time.Duration
-	pingInProgress  bool
+	serverCursor     int
+	serverInputs     []textinput.Model
+	serverFocused    int
+	editingServer    int
+	serverLatencies  map[int]time.Duration
+	pingInProgress   bool
 	prevServerPrefix string
+}
+
+type SearchFilters struct {
+	ItemType     string // "", movie, series, episode
+	PlayedFilter string // "", unplayed, played
+	FavoriteOnly bool
+	Year         int
 }
 
 // NavState represents navigation history
@@ -133,6 +146,11 @@ func New(svc *service.MediaService) *Model {
 	ti.CharLimit = 100
 	ti.Width = 30
 
+	yi := textinput.New()
+	yi.Placeholder = "Year"
+	yi.CharLimit = 4
+	yi.Width = 8
+
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -148,6 +166,7 @@ func New(svc *service.MediaService) *Model {
 		state:           initialState,
 		pageSize:        20,
 		searchInput:     ti,
+		searchYearInput: yi,
 		spinner:         sp,
 		status:          "Connecting...",
 		coverCache:      make(map[string]string),
@@ -204,9 +223,27 @@ func (m *Model) loadItems(parentID string, page int) tea.Cmd {
 	}
 }
 
-func (m *Model) searchItems(query string) tea.Cmd {
+func (m *Model) loadHistory(page int) tea.Cmd {
 	return func() tea.Msg {
-		list, err := m.svc.Search(query, 50)
+		list, err := m.svc.GetHistory(page, m.pageSize)
+		if err != nil {
+			return itemsMsg{err: err}
+		}
+		return itemsMsg{items: list.Items, total: list.Total}
+	}
+}
+
+func (m *Model) searchItems() tea.Cmd {
+	return func() tea.Msg {
+		list, err := m.svc.SearchWithOptions(service.SearchQuery{
+			Query:        m.lastSearchQuery,
+			Limit:        m.pageSize,
+			Page:         m.page,
+			ItemType:     m.searchFilters.ItemType,
+			PlayedFilter: m.searchFilters.PlayedFilter,
+			FavoriteOnly: m.searchFilters.FavoriteOnly,
+			Year:         m.searchFilters.Year,
+		})
 		if err != nil {
 			return itemsMsg{err: err}
 		}
@@ -247,6 +284,16 @@ func (m *Model) loadFavorites() tea.Cmd {
 func (m *Model) toggleFavorite(item service.MediaItem) tea.Cmd {
 	return func() tea.Msg {
 		result, err := m.svc.ToggleFavorite(item.ID)
+		if err != nil {
+			return favoriteMsg{itemID: item.ID, err: err}
+		}
+		return favoriteMsg{itemID: item.ID, isFav: result.IsFavorite}
+	}
+}
+
+func (m *Model) setFavorite(item service.MediaItem, target bool) tea.Cmd {
+	return func() tea.Msg {
+		result, err := m.svc.SetFavorite(item.ID, target)
 		if err != nil {
 			return favoriteMsg{itemID: item.ID, err: err}
 		}
@@ -330,8 +377,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			m.state = StateBrowsing
 			m.status = fmt.Sprintf("%d items", msg.total)
-			m.sectionCache[m.section] = msg.items
-			m.sectionCursor[m.section] = 0
+			if m.section == SectionResume || m.section == SectionFavorites {
+				m.sectionCache[m.section] = msg.items
+				m.sectionCursor[m.section] = 0
+			}
 		}
 		return m, m.loadVisibleImages()
 
@@ -473,7 +522,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.page > 0 {
 			m.page--
 			m.state = StateLoading
-			return m, m.loadItems(m.currentParentID(), m.page)
+			return m, m.loadCurrentPagedSection()
 		}
 
 	case "right", "l":
@@ -483,11 +532,28 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if (m.page+1)*m.pageSize < m.totalItems {
 			m.page++
 			m.state = StateLoading
-			return m, m.loadItems(m.currentParentID(), m.page)
+			return m, m.loadCurrentPagedSection()
 		}
 
 	case "enter":
 		return m.selectItem()
+
+	case "p":
+		if len(m.items) > 0 && m.cursor < len(m.items) {
+			item := m.items[m.cursor]
+			if item.Playable {
+				return m.playItem(item, false)
+			}
+		}
+		return m.selectItem()
+
+	case "R":
+		if len(m.items) > 0 && m.cursor < len(m.items) {
+			item := m.items[m.cursor]
+			if item.Playable {
+				return m.playItem(item, true)
+			}
+		}
 
 	case "backspace", "esc":
 		return m.goBack()
@@ -498,15 +564,30 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "2":
 		return m.switchSection(SectionFavorites, m.loadFavorites)
 
-	case "3", "/":
+	case "3":
+		return m.switchSection(SectionHistory, func() tea.Cmd { return m.loadHistory(0) })
+
+	case "4", "/":
 		m.state = StateSearching
-		m.searchInput.Focus()
-		return m, textinput.Blink
+		m.searchFocus = 0
+		return m, tea.Batch(m.searchInput.Focus(), textinput.Blink)
 
 	case "f":
 		if len(m.items) > 0 && m.cursor < len(m.items) {
 			item := m.items[m.cursor]
 			return m, m.toggleFavorite(item)
+		}
+
+	case "a":
+		if len(m.items) > 0 && m.cursor < len(m.items) {
+			item := m.items[m.cursor]
+			return m, m.setFavorite(item, true)
+		}
+
+	case "u":
+		if len(m.items) > 0 && m.cursor < len(m.items) {
+			item := m.items[m.cursor]
+			return m, m.setFavorite(item, false)
 		}
 
 	case "c":
@@ -565,22 +646,93 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.state = StateBrowsing
 		m.searchInput.Blur()
+		m.searchYearInput.Blur()
 		return m, nil
 
 	case "enter":
-		query := strings.TrimSpace(m.searchInput.Value())
-		if query != "" {
-			m.state = StateLoading
-			m.section = SectionSearch
-			m.searchInput.Blur()
-			return m, m.searchItems(query)
+		m.lastSearchQuery = strings.TrimSpace(m.searchInput.Value())
+		m.searchFilters.Year = parseSearchYear(m.searchYearInput.Value())
+		if !m.hasSearchCriteria() {
+			m.status = "Enter keyword or set at least one filter"
+			return m, nil
 		}
+		m.page = 0
+		m.state = StateLoading
+		m.section = SectionSearch
+		m.searchInput.Blur()
+		m.searchYearInput.Blur()
+		return m, m.searchItems()
+
+	case "tab", "shift+tab":
+		m.searchFocus = 1 - m.searchFocus
+		return m, m.focusSearchField()
+
+	case "t":
+		switch m.searchFilters.ItemType {
+		case "":
+			m.searchFilters.ItemType = "movie"
+		case "movie":
+			m.searchFilters.ItemType = "series"
+		case "series":
+			m.searchFilters.ItemType = "episode"
+		default:
+			m.searchFilters.ItemType = ""
+		}
+		return m, nil
+
+	case "p":
+		switch m.searchFilters.PlayedFilter {
+		case "":
+			m.searchFilters.PlayedFilter = "unplayed"
+		case "unplayed":
+			m.searchFilters.PlayedFilter = "played"
+		default:
+			m.searchFilters.PlayedFilter = ""
+		}
+		return m, nil
+
+	case "f":
+		m.searchFilters.FavoriteOnly = !m.searchFilters.FavoriteOnly
+		return m, nil
+
+	case "c":
+		m.searchFilters = SearchFilters{}
+		m.searchYearInput.SetValue("")
 		return m, nil
 	}
 
 	var cmd tea.Cmd
-	m.searchInput, cmd = m.searchInput.Update(msg)
+	if m.searchFocus == 1 {
+		m.searchYearInput, cmd = m.searchYearInput.Update(msg)
+	} else {
+		m.searchInput, cmd = m.searchInput.Update(msg)
+	}
 	return m, cmd
+}
+
+func (m *Model) focusSearchField() tea.Cmd {
+	if m.searchFocus == 1 {
+		m.searchInput.Blur()
+		return m.searchYearInput.Focus()
+	}
+	m.searchYearInput.Blur()
+	return m.searchInput.Focus()
+}
+
+func (m *Model) hasSearchCriteria() bool {
+	return m.lastSearchQuery != "" ||
+		m.searchFilters.ItemType != "" ||
+		m.searchFilters.PlayedFilter != "" ||
+		m.searchFilters.FavoriteOnly ||
+		m.searchFilters.Year > 0
+}
+
+func parseSearchYear(v string) int {
+	y, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || y <= 0 {
+		return 0
+	}
+	return y
 }
 
 func (m *Model) handleServerManageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -607,19 +759,19 @@ func (m *Model) handleServerManageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if srv := m.svc.GetActiveServer(); srv != nil {
 				oldPrefix = srv.Prefix
 			}
-			
+
 			err := m.svc.ActivateServer(m.serverCursor)
 			if err != nil {
 				return m, func() tea.Msg {
 					return connectServerMsg{err: err}
 				}
 			}
-			
+
 			newPrefix := ""
 			if srv := m.svc.GetActiveServer(); srv != nil {
 				newPrefix = srv.Prefix
 			}
-			
+
 			return m, func() tea.Msg {
 				return connectServerMsg{err: nil, samePrefix: oldPrefix != "" && oldPrefix == newPrefix}
 			}
@@ -684,7 +836,7 @@ func (m *Model) handleServerEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Username: m.serverInputs[2].Value(),
 		}
 		password := m.serverInputs[3].Value()
-		
+
 		if srv.URL == "" {
 			m.status = "URL is required"
 			return m, nil
@@ -699,12 +851,12 @@ func (m *Model) handleServerEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Using the existing one without password change for now
 			err = m.svc.UpdateServer(m.editingServer, srv.Name, srv.URL, srv.Username, password)
 		}
-		
+
 		if err != nil {
 			m.status = "Error: " + err.Error()
 			return m, nil
 		}
-		
+
 		m.state = StateServerManage
 		return m, nil
 	}

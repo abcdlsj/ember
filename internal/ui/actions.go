@@ -24,7 +24,7 @@ func (m *Model) selectItem() (tea.Model, tea.Cmd) {
 
 	switch item.Type {
 	case "Movie", "Episode", "Video":
-		return m.playItem(item)
+		return m.playItem(item, false)
 
 	case "Series":
 		m.pushNav()
@@ -52,7 +52,7 @@ func (m *Model) selectItem() (tea.Model, tea.Cmd) {
 }
 
 // playItem plays a media item
-func (m *Model) playItem(item service.MediaItem) (tea.Model, tea.Cmd) {
+func (m *Model) playItem(item service.MediaItem, fromBeginning bool) (tea.Model, tea.Cmd) {
 	streamInfo, err := m.svc.GetStreamInfo(item.ID)
 	if err != nil {
 		m.status = "Cannot play: " + err.Error()
@@ -65,25 +65,33 @@ func (m *Model) playItem(item service.MediaItem) (tea.Model, tea.Cmd) {
 	client := m.svc.Client()
 	store := m.svc.Store()
 	durationTicks := item.RunTimeTicks
+	startPosSec := streamInfo.PositionSec
+	if fromBeginning {
+		startPosSec = 0
+	}
 
 	// Report playback start
 	m.svc.ReportPlayback(service.PlaybackRequest{
 		Type:          "start",
 		ItemID:        itemID,
-		PositionTicks: streamInfo.PositionSec * 10000000,
+		PositionTicks: startPosSec * 10000000,
 	})
 
-	m.status = "Playing: " + item.Name
+	if fromBeginning {
+		m.status = "Playing from beginning: " + item.Name
+	} else {
+		m.status = "Playing: " + item.Name
+	}
 
 	return m, func() tea.Msg {
-		result := player.Play(streamInfo.StreamURL, item.Name, []string{}, streamInfo.PositionSec)
+		result := player.Play(streamInfo.StreamURL, item.Name, []string{}, startPosSec)
 
 		// Save local progress
 		store.UpdatePlaybackPosition(itemID, result.PositionSec, durationTicks/10000000)
 
 		// Report to Emby
 		err := client.ReportPlaybackStopped(itemID, mediaSourceID, sessionID, result.PositionSec*10_000_000)
-		
+
 		return playDoneMsg{
 			itemID:        itemID,
 			positionSec:   result.PositionSec,
@@ -348,7 +356,9 @@ func (m *Model) syncItemState(itemID string, updater func(*service.MediaItem)) {
 // refreshCurrentView reloads the current view
 func (m *Model) refreshCurrentView() (tea.Model, tea.Cmd) {
 	m.state = StateLoading
-	delete(m.sectionCache, m.section)
+	if m.section == SectionResume || m.section == SectionFavorites {
+		delete(m.sectionCache, m.section)
+	}
 
 	switch m.section {
 	case SectionResume:
@@ -357,15 +367,28 @@ func (m *Model) refreshCurrentView() (tea.Model, tea.Cmd) {
 	case SectionFavorites:
 		return m, m.loadFavorites()
 
+	case SectionHistory:
+		return m, m.loadHistory(m.page)
+
 	case SectionSearch:
-		query := strings.TrimSpace(m.searchInput.Value())
-		if query != "" {
-			return m, m.searchItems(query)
+		if m.hasSearchCriteria() {
+			return m, m.searchItems()
 		}
 		return m, nil
 
 	default:
 		return m, m.loadItems(m.currentParentID(), m.page)
+	}
+}
+
+func (m *Model) loadCurrentPagedSection() tea.Cmd {
+	switch m.section {
+	case SectionHistory:
+		return m.loadHistory(m.page)
+	case SectionSearch:
+		return m.searchItems()
+	default:
+		return m.loadItems(m.currentParentID(), m.page)
 	}
 }
 
@@ -378,13 +401,15 @@ func (m *Model) switchSection(target Section, loader func() tea.Cmd) (tea.Model,
 	m.navStack = nil
 	m.currentLib = nil
 
-	if cached, ok := m.sectionCache[target]; ok && len(cached) > 0 {
-		m.items = cached
-		m.totalItems = len(cached)
-		m.cursor = m.sectionCursor[target]
-		m.state = StateBrowsing
-		m.status = fmt.Sprintf("%d items", len(cached))
-		return m, m.loadVisibleImages()
+	if (target == SectionResume || target == SectionFavorites) && len(m.navStack) == 0 {
+		if cached, ok := m.sectionCache[target]; ok && len(cached) > 0 {
+			m.items = cached
+			m.totalItems = len(cached)
+			m.cursor = m.sectionCursor[target]
+			m.state = StateBrowsing
+			m.status = fmt.Sprintf("%d items", len(cached))
+			return m, m.loadVisibleImages()
+		}
 	}
 
 	m.state = StateLoading
@@ -460,4 +485,3 @@ func convertRawToService(item api.MediaItem) service.MediaItem {
 		Browsable:    item.Type == "Series" || item.Type == "Season" || item.Type == "CollectionFolder" || item.Type == "Folder" || item.Type == "BoxSet",
 	}
 }
-

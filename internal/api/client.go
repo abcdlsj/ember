@@ -108,6 +108,16 @@ type AuthUser struct {
 	Name string `json:"Name"`
 }
 
+type SearchOptions struct {
+	Query        string
+	Start        int
+	Limit        int
+	ItemTypes    []string
+	PlayedFilter string // "", "played", "unplayed"
+	FavoriteOnly bool
+	Year         int
+}
+
 func New(server string) *Client {
 	return &Client{
 		Server: server,
@@ -270,13 +280,61 @@ func (c *Client) GetItems(parentID string, start, limit int) ([]MediaItem, int, 
 }
 
 func (c *Client) Search(query string, limit int) ([]MediaItem, error) {
-	params := baseParams(limit)
+	items, _, err := c.SearchWithOptions(SearchOptions{
+		Query: query,
+		Start: 0,
+		Limit: limit,
+	})
+	return items, err
+}
+
+func (c *Client) SearchWithOptions(opts SearchOptions) ([]MediaItem, int, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	if opts.Start < 0 {
+		opts.Start = 0
+	}
+
+	params := baseParams(opts.Limit)
 	params.Set("Recursive", "true")
-	params.Set("SearchTerm", query)
+	params.Set("StartIndex", fmt.Sprintf("%d", opts.Start))
 	params.Set("Fields", "Overview,MediaSources,ProductionYear,UserData")
+	if opts.Query != "" {
+		params.Set("SearchTerm", opts.Query)
+	}
+	if len(opts.ItemTypes) > 0 {
+		params.Set("IncludeItemTypes", strings.Join(opts.ItemTypes, ","))
+	}
+
+	var filters []string
+	switch opts.PlayedFilter {
+	case "played":
+		filters = append(filters, "IsPlayed")
+	case "unplayed":
+		filters = append(filters, "IsUnplayed")
+	}
+	if opts.FavoriteOnly {
+		filters = append(filters, "IsFavorite")
+	}
+	if len(filters) > 0 {
+		params.Set("Filters", strings.Join(filters, ","))
+	}
+	if opts.Year > 0 {
+		params.Set("Years", fmt.Sprintf("%d", opts.Year))
+	}
 
 	endpoint := fmt.Sprintf("/emby/Users/%s/Items?%s", c.UserID, params.Encode())
-	return c.getItems(endpoint)
+	data, err := c.request(context.Background(), "GET", endpoint, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var resp ItemsResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, 0, err
+	}
+	return resp.Items, resp.TotalCount, nil
 }
 
 func (c *Client) GetItem(itemID string) (*MediaItem, error) {
@@ -444,4 +502,34 @@ func (c *Client) GetResumeItems(limit int) ([]MediaItem, error) {
 
 	endpoint := fmt.Sprintf("/emby/Users/%s/Items?%s", c.UserID, params.Encode())
 	return c.getItems(endpoint)
+}
+
+func (c *Client) GetHistory(start, limit int) ([]MediaItem, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if start < 0 {
+		start = 0
+	}
+
+	params := baseParams(limit)
+	params.Set("Recursive", "true")
+	params.Set("StartIndex", fmt.Sprintf("%d", start))
+	params.Set("Fields", "Overview,MediaSources,ProductionYear,UserData")
+	params.Set("Filters", "IsPlayed")
+	params.Set("SortBy", "DatePlayed")
+	params.Set("SortOrder", "Descending")
+	params.Set("IncludeItemTypes", "Movie,Episode")
+
+	endpoint := fmt.Sprintf("/emby/Users/%s/Items?%s", c.UserID, params.Encode())
+	data, err := c.request(context.Background(), "GET", endpoint, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var resp ItemsResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, 0, err
+	}
+	return resp.Items, resp.TotalCount, nil
 }

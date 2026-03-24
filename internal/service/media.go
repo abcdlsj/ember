@@ -153,21 +153,73 @@ func (s *MediaService) GetEpisodes(seriesID, seasonID string) (*MediaList, error
 
 // Search performs a search query
 func (s *MediaService) Search(query string, limit int) (*MediaList, error) {
-	if limit <= 0 {
-		limit = 50
+	return s.SearchWithOptions(SearchQuery{
+		Query: query,
+		Limit: limit,
+	})
+}
+
+// SearchWithOptions performs search query with filters and pagination.
+func (s *MediaService) SearchWithOptions(q SearchQuery) (*MediaList, error) {
+	if q.Limit <= 0 {
+		q.Limit = 50
+	}
+	if q.Page < 0 {
+		q.Page = 0
 	}
 
-	items, err := s.client.Search(query, limit)
+	var itemTypes []string
+	switch q.ItemType {
+	case "movie":
+		itemTypes = append(itemTypes, "Movie")
+	case "series":
+		itemTypes = append(itemTypes, "Series")
+	case "episode":
+		itemTypes = append(itemTypes, "Episode")
+	}
+
+	items, total, err := s.client.SearchWithOptions(api.SearchOptions{
+		Query:        q.Query,
+		Start:        q.Page * q.Limit,
+		Limit:        q.Limit,
+		ItemTypes:    itemTypes,
+		PlayedFilter: q.PlayedFilter,
+		FavoriteOnly: q.FavoriteOnly,
+		Year:         q.Year,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
 
 	return &MediaList{
 		Items:    s.convertItems(items),
-		Total:    len(items),
-		Page:     0,
-		PageSize: limit,
-		HasMore:  false,
+		Total:    total,
+		Page:     q.Page,
+		PageSize: q.Limit,
+		HasMore:  (q.Page+1)*q.Limit < total,
+	}, nil
+}
+
+// GetHistory returns watched history ordered by DatePlayed descending.
+func (s *MediaService) GetHistory(page, pageSize int) (*MediaList, error) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+
+	items, total, err := s.client.GetHistory(page*pageSize, pageSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get history: %w", err)
+	}
+
+	return &MediaList{
+		Items:    s.convertItems(items),
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		HasMore:  (page+1)*pageSize < total,
 	}, nil
 }
 

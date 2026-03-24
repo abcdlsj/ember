@@ -9,25 +9,25 @@ import (
 
 // MediaItem represents a unified media item for UI consumption
 type MediaItem struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Type            string     `json:"type"`
-	Year            int        `json:"year,omitempty"`
-	SeriesID        string     `json:"seriesId,omitempty"`
-	SeriesName      string     `json:"seriesName,omitempty"`
-	SeasonID        string     `json:"seasonId,omitempty"`
-	SeasonName      string     `json:"seasonName,omitempty"`
-	ParentID        string     `json:"parentId,omitempty"`
-	IndexNumber     int        `json:"indexNumber,omitempty"`
-	Overview        string     `json:"overview,omitempty"`
-	RunTimeTicks    int64      `json:"runTimeTicks,omitempty"`
-	ImageURL        string     `json:"imageUrl,omitempty"`      // 400px for TUI
-	ImageURLHigh    string     `json:"imageUrlHigh,omitempty"`  // 800px for Web UI
-	BackdropURL     string     `json:"backdropUrl,omitempty"`
-	UserData        *UserData  `json:"userData,omitempty"`
-	MediaSources    []MediaSource `json:"mediaSources,omitempty"`
-	Playable        bool       `json:"playable"`
-	Browsable       bool       `json:"browsable"`
+	ID           string        `json:"id"`
+	Name         string        `json:"name"`
+	Type         string        `json:"type"`
+	Year         int           `json:"year,omitempty"`
+	SeriesID     string        `json:"seriesId,omitempty"`
+	SeriesName   string        `json:"seriesName,omitempty"`
+	SeasonID     string        `json:"seasonId,omitempty"`
+	SeasonName   string        `json:"seasonName,omitempty"`
+	ParentID     string        `json:"parentId,omitempty"`
+	IndexNumber  int           `json:"indexNumber,omitempty"`
+	Overview     string        `json:"overview,omitempty"`
+	RunTimeTicks int64         `json:"runTimeTicks,omitempty"`
+	ImageURL     string        `json:"imageUrl,omitempty"`     // 400px for TUI
+	ImageURLHigh string        `json:"imageUrlHigh,omitempty"` // 800px for Web UI
+	BackdropURL  string        `json:"backdropUrl,omitempty"`
+	UserData     *UserData     `json:"userData,omitempty"`
+	MediaSources []MediaSource `json:"mediaSources,omitempty"`
+	Playable     bool          `json:"playable"`
+	Browsable    bool          `json:"browsable"`
 }
 
 // UserData represents playback and favorite status
@@ -41,9 +41,9 @@ type UserData struct {
 
 // MediaSource represents a playable media source
 type MediaSource struct {
-	ID         string `json:"id"`
-	Container  string `json:"container"`
-	Protocol   string `json:"protocol,omitempty"`
+	ID        string `json:"id"`
+	Container string `json:"container"`
+	Protocol  string `json:"protocol,omitempty"`
 }
 
 // MediaDetail stores additional media information
@@ -70,28 +70,28 @@ type SubtitleInfo struct {
 
 // MediaList represents a paginated list of media items
 type MediaList struct {
-	Items      []MediaItem `json:"items"`
-	Total      int         `json:"total"`
-	Page       int         `json:"page"`
-	PageSize   int         `json:"pageSize"`
-	HasMore    bool        `json:"hasMore"`
+	Items    []MediaItem `json:"items"`
+	Total    int         `json:"total"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"pageSize"`
+	HasMore  bool        `json:"hasMore"`
 }
 
 // StreamInfo represents streaming information for playback
 type StreamInfo struct {
-	ItemID       string         `json:"itemId"`
-	Name         string         `json:"name"`
-	SeriesID     string         `json:"seriesId,omitempty"`
-	SeriesName   string         `json:"seriesName,omitempty"`
-	Type         string         `json:"type"`
-	StreamURL    string         `json:"streamUrl"`
-	PosterURL    string         `json:"posterUrl,omitempty"`
-	Container    string         `json:"container,omitempty"`
-	Duration     int64          `json:"duration,omitempty"`
-	PositionSec  int64          `json:"positionSec,omitempty"`
-	Subtitles    []SubtitleInfo `json:"subtitles,omitempty"`
-	IsFavorite   bool           `json:"isFavorite"`
-	MediaSourceID string        `json:"mediaSourceId,omitempty"`
+	ItemID        string         `json:"itemId"`
+	Name          string         `json:"name"`
+	SeriesID      string         `json:"seriesId,omitempty"`
+	SeriesName    string         `json:"seriesName,omitempty"`
+	Type          string         `json:"type"`
+	StreamURL     string         `json:"streamUrl"`
+	PosterURL     string         `json:"posterUrl,omitempty"`
+	Container     string         `json:"container,omitempty"`
+	Duration      int64          `json:"duration,omitempty"`
+	PositionSec   int64          `json:"positionSec,omitempty"`
+	Subtitles     []SubtitleInfo `json:"subtitles,omitempty"`
+	IsFavorite    bool           `json:"isFavorite"`
+	MediaSourceID string         `json:"mediaSourceId,omitempty"`
 }
 
 // ServerInfo represents a configured server
@@ -123,9 +123,14 @@ type PlaybackRequest struct {
 
 // SearchQuery represents search parameters
 type SearchQuery struct {
-	Query    string `json:"query"`
-	Limit    int    `json:"limit"`
-	ParentID string `json:"parentId,omitempty"`
+	Query        string `json:"query"`
+	Limit        int    `json:"limit"`
+	Page         int    `json:"page,omitempty"`
+	ParentID     string `json:"parentId,omitempty"`
+	ItemType     string `json:"itemType,omitempty"`     // movie, series, episode
+	PlayedFilter string `json:"playedFilter,omitempty"` // played, unplayed
+	FavoriteOnly bool   `json:"favoriteOnly,omitempty"`
+	Year         int    `json:"year,omitempty"`
 }
 
 // Pagination represents pagination parameters
@@ -158,9 +163,9 @@ type PlayResult struct {
 
 // EpisodePlaylist represents a playlist of episodes for series playback
 type EpisodePlaylist struct {
-	SeriesID  string           `json:"seriesId"`
-	SeriesName string          `json:"seriesName"`
-	Episodes  []PlaylistEpisode `json:"episodes"`
+	SeriesID   string            `json:"seriesId"`
+	SeriesName string            `json:"seriesName"`
+	Episodes   []PlaylistEpisode `json:"episodes"`
 }
 
 // PlaylistEpisode represents a single episode in a playlist
@@ -199,7 +204,7 @@ func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 	}
 
 	playable := item.Type == "Movie" || item.Type == "Episode" || item.Type == "Video"
-	browsable := item.Type == "Series" || item.Type == "Season" || 
+	browsable := item.Type == "Series" || item.Type == "Season" ||
 		item.Type == "CollectionFolder" || item.Type == "Folder" || item.Type == "BoxSet"
 
 	var userData *UserData
@@ -247,4 +252,3 @@ func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 		Browsable:    browsable,
 	}
 }
-

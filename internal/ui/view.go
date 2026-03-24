@@ -174,9 +174,26 @@ func (m *Model) renderItemInfo(item service.MediaItem, width int) string {
 }
 
 func (m *Model) renderSearch() string {
-	title := lipgloss.NewStyle().Bold(true).MarginBottom(1).Render("Search")
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render("[Enter] search  [Esc] cancel")
-	return lipgloss.JoinVertical(lipgloss.Center, title, m.searchInput.View(), hint)
+	title := lipgloss.NewStyle().Bold(true).MarginBottom(1).Render("Advanced Search")
+	queryLine := "Query: " + m.searchInput.View()
+	yearLine := "Year : " + m.searchYearInput.View()
+	typeLabel := m.searchFilters.ItemType
+	if typeLabel == "" {
+		typeLabel = "all"
+	}
+	playedLabel := m.searchFilters.PlayedFilter
+	if playedLabel == "" {
+		playedLabel = "all"
+	}
+	favLabel := "no"
+	if m.searchFilters.FavoriteOnly {
+		favLabel = "yes"
+	}
+	filterLine := fmt.Sprintf("Type[%s] Played[%s] FavOnly[%s]", typeLabel, playedLabel, favLabel)
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
+		"[Tab] field  [t] type  [p] played  [f] fav-only  [c] clear  [Enter] search  [Esc] cancel",
+	)
+	return lipgloss.JoinVertical(lipgloss.Left, title, queryLine, yearLine, filterLine, hint)
 }
 
 func (m *Model) renderServerManage() string {
@@ -300,8 +317,10 @@ func (m *Model) renderStatus(width, height int) string {
 		name string
 		sec  Section
 	}{
-		{"1", "Resume", SectionResume},
+		{"1", "Continue", SectionResume},
 		{"2", "Favorites", SectionFavorites},
+		{"3", "History", SectionHistory},
+		{"4", "Search", SectionSearch},
 	}
 
 	var navItems []string
@@ -403,15 +422,19 @@ func (m *Model) renderStatus(width, height int) string {
 		dimStyle.Render("Keys:"),
 		dimStyle.Render(" ←→  move"),
 		dimStyle.Render(" ↵   select"),
+		dimStyle.Render(" p   play"),
+		dimStyle.Render(" R   replay"),
 		dimStyle.Render(" esc back"),
 		dimStyle.Render(" f   fav"),
+		dimStyle.Render(" a/u fav set"),
 		dimStyle.Render(" s   season"),
 		dimStyle.Render(" S   series"),
 		dimStyle.Render(" c   continuous"),
 		dimStyle.Render(" d   debug"),
 		dimStyle.Render(" r   refresh"),
+		dimStyle.Render(" 3   history"),
+		dimStyle.Render(" 4,/ search"),
 		dimStyle.Render(" m   servers"),
-		dimStyle.Render(" /   search"),
 		dimStyle.Render(" q   quit"),
 	)
 
