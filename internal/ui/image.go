@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	chafa "github.com/ploMP4/chafa-go"
+	_ "golang.org/x/image/webp"
 )
 
 var (

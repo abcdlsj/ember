@@ -61,11 +61,7 @@ func (m *Model) renderCarousel(width, height int) string {
 		return style.Align(lipgloss.Center, lipgloss.Center).Render(empty)
 	}
 
-	coverHeight := height - 11
-	coverWidth := width - 4
-	if coverHeight < 8 {
-		coverHeight = height - 8
-	}
+	coverWidth, coverHeight := m.coverFrame(width, height)
 
 	var cover string
 	if m.cursor < 0 || m.cursor >= len(m.items) {
@@ -91,14 +87,14 @@ func (m *Model) renderCarousel(width, height int) string {
 		parts = append([]string{header}, parts...)
 	}
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	return style.Align(lipgloss.Center, lipgloss.Bottom).Render(content)
+	return style.Align(lipgloss.Center, lipgloss.Top).Render(content)
 }
 
 func (m *Model) renderCover(item service.MediaItem, width, height int, selected bool) string {
 	style := lipgloss.NewStyle().
 		Width(width).
 		Height(height).
-		Align(lipgloss.Center, lipgloss.Center)
+		Align(lipgloss.Center, lipgloss.Top)
 
 	if img, ok := m.coverCache[item.ID]; ok && img != "" {
 		imgStyle := lipgloss.NewStyle().
@@ -106,7 +102,7 @@ func (m *Model) renderCover(item service.MediaItem, width, height int, selected 
 			Height(height).
 			MaxWidth(width).
 			MaxHeight(height).
-			Align(lipgloss.Center, lipgloss.Center)
+			Align(lipgloss.Center, lipgloss.Top)
 		return style.Render(imgStyle.Render(img))
 	}
 
@@ -673,6 +669,28 @@ func (m *Model) currentItem() (service.MediaItem, bool) {
 		return service.MediaItem{}, false
 	}
 	return m.items[m.cursor], true
+}
+
+func (m *Model) coverFrame(width, height int) (int, int) {
+	coverWidth := width - 4
+	if coverWidth < 1 {
+		coverWidth = 1
+	}
+
+	reserved := lipgloss.Height(m.renderContentHeader(width)) + 1
+	if item, ok := m.currentItem(); ok {
+		reserved += lipgloss.Height(m.renderItemInfo(item, width))
+	}
+
+	coverHeight := height - reserved
+	if coverHeight < 8 {
+		coverHeight = 8
+	}
+	if coverHeight > height {
+		coverHeight = height
+	}
+
+	return coverWidth, coverHeight
 }
 
 func formatDuration(sec int64) string {
