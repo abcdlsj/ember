@@ -25,10 +25,6 @@ func (s *MediaService) SetClient(client *api.Client) {
 	s.client = client
 }
 
-func (s *MediaService) Client() *api.Client {
-	return s.client
-}
-
 func (s *MediaService) Store() *storage.Store {
 	return s.store
 }
@@ -232,6 +228,13 @@ func (s *MediaService) GetStreamInfoForItem(item MediaItem) (*StreamInfo, error)
 
 	ms := item.MediaSources[0]
 	isFav := item.UserData != nil && item.UserData.IsFavorite
+	subtitleURLs := make([]string, 0, len(ms.Subtitles))
+	for _, subtitle := range ms.Subtitles {
+		if !subtitle.IsExternal {
+			continue
+		}
+		subtitleURLs = append(subtitleURLs, s.client.SubtitleURL(item.ID, ms.ID, subtitle.Index, subtitle.Codec))
+	}
 
 	return &StreamInfo{
 		ItemID:        item.ID,
@@ -245,6 +248,7 @@ func (s *MediaService) GetStreamInfoForItem(item MediaItem) (*StreamInfo, error)
 		Duration:      item.RunTimeTicks,
 		PositionSec:   s.playbackPosition(item),
 		Subtitles:     ms.Subtitles,
+		SubtitleURLs:  subtitleURLs,
 		IsFavorite:    isFav,
 		MediaSourceID: ms.ID,
 	}, nil
@@ -315,6 +319,175 @@ func (s *MediaService) ToggleFavorite(itemID string) (*FavoriteResult, error) {
 	}
 
 	return s.SetFavorite(itemID, !isFav)
+}
+
+func (s *MediaService) ReportPlaybackStart(itemID, mediaSourceID, sessionID string, positionSec int64) error {
+	return s.client.ReportPlaybackStart(itemID, mediaSourceID, sessionID, positionSec*10_000_000)
+}
+
+func (s *MediaService) ReportPlaybackStopped(itemID, mediaSourceID, sessionID string, positionSec, durationTicks int64) error {
+	s.store.UpdatePlaybackPosition(itemID, positionSec, durationTicks/10_000_000)
+	return s.client.ReportPlaybackStopped(itemID, mediaSourceID, sessionID, positionSec*10_000_000)
+}
+
+func (s *MediaService) BuildContinuousPlayback(item MediaItem) (*ContinuousPlaybackPlan, error) {
+	seriesID := item.SeriesID
+	seasonID := item.SeasonID
+	if seasonID == "" {
+		seasonID = item.ParentID
+	}
+	if seriesID == "" || seasonID == "" {
+		return nil, fmt.Errorf("missing season info")
+	}
+
+	episodes, err := s.client.GetEpisodes(seriesID, seasonID)
+	if err != nil {
+		return nil, err
+	}
+	if len(episodes) == 0 {
+		return nil, fmt.Errorf("no episodes found")
+	}
+
+	startIndex := 0
+	for i, ep := range episodes {
+		if ep.ID == item.ID {
+			startIndex = i
+			break
+		}
+	}
+
+	urls := make([]string, 0, len(episodes)-startIndex)
+	var currentItem MediaItem
+	currentSet := false
+	for i := startIndex; i < len(episodes); i++ {
+		epFull, err := s.client.GetItem(episodes[i].ID)
+		if err != nil || len(epFull.MediaSources) == 0 {
+			continue
+		}
+
+		ms := epFull.MediaSources[0]
+		urls = append(urls, s.client.StreamURL(epFull.ID, ms.ID, ms.Container))
+		if !currentSet {
+			currentItem = s.convertItem(*epFull)
+			currentSet = true
+		}
+	}
+
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no playable episodes found")
+	}
+	if !currentSet {
+		return nil, fmt.Errorf("no playable item found")
+	}
+
+	streamInfo, err := s.GetStreamInfoForItem(currentItem)
+	if err != nil {
+		return nil, err
+	}
+
+	title := item.SeriesName
+	if title == "" {
+		title = item.Name
+	}
+
+	return &ContinuousPlaybackPlan{
+		Title:       title,
+		StartIndex:  0,
+		URLs:        urls,
+		CurrentItem: currentItem,
+		StreamInfo:  streamInfo,
+	}, nil
+}
+
+func (s *MediaService) ResolveSeason(item MediaItem) (*MediaList, string, string, error) {
+	seriesID := item.SeriesID
+	seasonID := item.SeasonID
+	if seriesID == "" {
+		fullItem, err := s.client.GetItem(item.ID)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("no series info")
+		}
+		seriesID = fullItem.SeriesID
+		seasonID = fullItem.SeasonID
+		if seasonID == "" {
+			seasonID = fullItem.ParentID
+		}
+	}
+
+	if seriesID == "" || seasonID == "" {
+		return nil, "", "", fmt.Errorf("no season info")
+	}
+
+	list, err := s.GetEpisodes(seriesID, seasonID)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	return list, seriesID, seasonID, nil
+}
+
+func (s *MediaService) ResolveSeries(item MediaItem) (*MediaList, string, error) {
+	seriesID := item.SeriesID
+	if seriesID == "" && item.ParentID != "" {
+		seriesID = item.ParentID
+	}
+	if seriesID == "" {
+		fullItem, err := s.client.GetItem(item.ID)
+		if err != nil {
+			return nil, "", fmt.Errorf("no series info")
+		}
+		seriesID = fullItem.SeriesID
+		if seriesID == "" {
+			seriesID = fullItem.ParentID
+		}
+	}
+
+	if seriesID == "" {
+		return nil, "", fmt.Errorf("no series info")
+	}
+
+	list, err := s.GetSeasons(seriesID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return list, seriesID, nil
+}
+
+func (s *MediaService) GetMediaDetail(itemID string) (*storage.MediaDetail, error) {
+	if cached, ok := s.store.GetMediaDetail(itemID); ok {
+		detail := cached
+		return &detail, nil
+	}
+
+	item, err := s.client.GetItem(itemID)
+	if err != nil || len(item.MediaSources) == 0 {
+		if err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	ms := item.MediaSources[0]
+	detail := storage.MediaDetail{
+		ItemID:    itemID,
+		SourceID:  ms.ID,
+		Container: ms.Container,
+	}
+	for _, stream := range ms.MediaStreams {
+		if stream.Type != "Subtitle" {
+			continue
+		}
+		detail.Subtitles = append(detail.Subtitles, storage.SubtitleInfo{
+			Index:      stream.Index,
+			Language:   stream.Language,
+			Title:      stream.Title,
+			IsExternal: stream.IsExternal,
+			Codec:      stream.Codec,
+		})
+	}
+	s.store.SetMediaDetail(detail)
+	return &detail, nil
 }
 
 func (s *MediaService) GetServers() []ServerInfo {
@@ -466,10 +639,6 @@ func (s *MediaService) convertItem(item api.MediaItem) MediaItem {
 
 func generateSessionID() string {
 	return fmt.Sprintf("ember-%d", time.Now().Unix())
-}
-
-func (s *MediaService) GetItemRaw(itemID string) (*api.MediaItem, error) {
-	return s.client.GetItem(itemID)
 }
 func (s *MediaService) PlayWithMPV(itemID string) (*PlayResult, error) {
 	if !player.Available() {

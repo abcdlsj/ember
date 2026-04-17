@@ -82,7 +82,13 @@ func (m *Model) renderCarousel(width, height int) string {
 		Width(width).
 		Render(fmt.Sprintf("< %d / %d >  Page %d  Total %d", m.cursor+1, len(m.items), m.page+1, m.totalItems))
 
-	parts := []string{cover, info, nav}
+	coverBlock := lipgloss.NewStyle().
+		Width(width).
+		Height(coverHeight).
+		Align(lipgloss.Center, lipgloss.Top).
+		Render(cover)
+
+	parts := []string{coverBlock, "", info, nav}
 	if header := m.renderContentHeader(width); header != "" {
 		parts = append([]string{header}, parts...)
 	}
@@ -91,23 +97,15 @@ func (m *Model) renderCarousel(width, height int) string {
 }
 
 func (m *Model) renderCover(item service.MediaItem, width, height int, selected bool) string {
-	style := lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		Align(lipgloss.Center, lipgloss.Top)
-
 	if img, ok := m.coverCache[item.ID]; ok && img != "" {
 		imgStyle := lipgloss.NewStyle().
 			Width(width).
-			Height(height).
 			MaxWidth(width).
-			MaxHeight(height).
 			Align(lipgloss.Center, lipgloss.Top)
-		return style.Render(imgStyle.Render(img))
+		return imgStyle.Render(img)
 	}
 
-	placeholder := m.renderPlaceholder(item, width, height, selected)
-	return style.Render(placeholder)
+	return m.renderPlaceholder(item, width, height, selected)
 }
 
 func (m *Model) renderPlaceholder(item service.MediaItem, width, height int, selected bool) string {
@@ -163,31 +161,15 @@ func (m *Model) renderItemInfo(item service.MediaItem, width int) string {
 		Width(width).
 		Align(lipgloss.Center)
 
-	accentStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("117")).
-		Width(width).
-		Align(lipgloss.Center)
-
-	title := item.Name
-	if item.Year > 0 {
-		title = fmt.Sprintf("%s (%d)", item.Name, item.Year)
-	}
-	if item.IndexNumber > 0 {
-		title = fmt.Sprintf("EP %02d - %s", item.IndexNumber, item.Name)
-	}
-
-	lines := []string{titleStyle.Render(title)}
-
-	if context := itemContext(item); context != "" {
-		lines = append(lines, accentStyle.Render(context))
-	}
-
+	lines := []string{titleStyle.Render(truncateText(itemPrimaryTitle(item), width-2))}
 	meta := strings.Join(itemMeta(item), "  ")
-	if meta != "" {
-		lines = append(lines, lineStyle.Render(meta))
-	}
+	lines = append(lines, lineStyle.Render(truncateText(meta, width-2)))
 
-	return lipgloss.JoinVertical(lipgloss.Center, lines...)
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(2).
+		Align(lipgloss.Center, lipgloss.Bottom).
+		Render(lipgloss.JoinVertical(lipgloss.Center, lines...))
 }
 
 func (m *Model) renderSearch() string {
@@ -387,7 +369,6 @@ func (m *Model) renderStatus(width, height int) string {
 		curItem := m.items[m.cursor]
 		lines = append(lines, "", divider)
 		lines = append(lines, highlightStyle.Render("Current:"))
-		lines = append(lines, dimStyle.Render(curItem.Name))
 		meta := strings.Join(itemMeta(curItem), " · ")
 		if meta != "" {
 			lines = append(lines, dimStyle.Render(truncateText(meta, width-4)))
@@ -474,8 +455,6 @@ func (m *Model) renderHelp(width int) string {
 		"",
 		"Actions",
 		"  f toggle favorite",
-		"  a add favorite",
-		"  u remove favorite",
 		"  s jump to season",
 		"  S jump to series",
 		"  r refresh current view",
@@ -522,21 +501,23 @@ func (m *Model) currentBreadcrumb() string {
 	return strings.Join(parts, " / ")
 }
 
-func itemContext(item service.MediaItem) string {
-	if item.Type == "Episode" {
-		parts := make([]string, 0, 2)
-		if strings.TrimSpace(item.SeriesName) != "" {
-			parts = append(parts, item.SeriesName)
-		}
-		if strings.TrimSpace(item.SeasonName) != "" {
-			parts = append(parts, item.SeasonName)
-		}
-		return strings.Join(parts, " / ")
+func itemPrimaryTitle(item service.MediaItem) string {
+	if name := strings.TrimSpace(item.Name); name != "" {
+		return name
 	}
-	if item.Type == "Season" && strings.TrimSpace(item.SeriesName) != "" {
+	if item.Type == "Episode" && item.IndexNumber > 0 {
+		return fmt.Sprintf("EP %02d", item.IndexNumber)
+	}
+	if item.SeasonName != "" {
+		return item.SeasonName
+	}
+	if item.SeriesName != "" {
 		return item.SeriesName
 	}
-	return ""
+	if item.Type != "" {
+		return item.Type
+	}
+	return "Unknown"
 }
 
 func itemMeta(item service.MediaItem) []string {
@@ -653,11 +634,7 @@ func (m *Model) statusActions() []string {
 		} else if item.Type == "Season" {
 			actions = append(actions, " S   series")
 		}
-		if item.UserData != nil && item.UserData.IsFavorite {
-			actions = append(actions, " u   unfav")
-		} else {
-			actions = append(actions, " f   favorite")
-		}
+		actions = append(actions, " f   toggle fav")
 	}
 
 	actions = append(actions, " r   refresh", " 4,/ search", " ?   help", " q   quit")
@@ -677,14 +654,11 @@ func (m *Model) coverFrame(width, height int) (int, int) {
 		coverWidth = 1
 	}
 
-	reserved := lipgloss.Height(m.renderContentHeader(width)) + 1
-	if item, ok := m.currentItem(); ok {
-		reserved += lipgloss.Height(m.renderItemInfo(item, width))
-	}
+	reserved := lipgloss.Height(m.renderContentHeader(width)) + 4
 
 	coverHeight := height - reserved
-	if coverHeight < 8 {
-		coverHeight = 8
+	if coverHeight < 1 {
+		coverHeight = 1
 	}
 	if coverHeight > height {
 		coverHeight = height

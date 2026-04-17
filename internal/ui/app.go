@@ -297,16 +297,6 @@ func (m *Model) toggleFavorite(item service.MediaItem) tea.Cmd {
 	}
 }
 
-func (m *Model) setFavorite(item service.MediaItem, target bool) tea.Cmd {
-	return func() tea.Msg {
-		result, err := m.svc.SetFavorite(item.ID, target)
-		if err != nil {
-			return favoriteMsg{itemID: item.ID, err: err}
-		}
-		return favoriteMsg{itemID: item.ID, isFav: result.IsFavorite}
-	}
-}
-
 func (m *Model) pingServer() tea.Cmd {
 	return func() tea.Msg {
 		status := m.svc.GetServerStatus()
@@ -335,35 +325,11 @@ func (m *Model) loadImage(item service.MediaItem, width, height int) tea.Cmd {
 
 func (m *Model) loadDetail(itemID string) tea.Cmd {
 	return func() tea.Msg {
-		if cached, ok := m.svc.Store().GetMediaDetail(itemID); ok {
-			d := cached
-			return detailMsg{id: itemID, detail: &d}
-		}
-
-		item, err := m.svc.GetItemRaw(itemID)
-		if err != nil || len(item.MediaSources) == 0 {
+		detail, err := m.svc.GetMediaDetail(itemID)
+		if err != nil || detail == nil {
 			return detailMsg{id: itemID, detail: nil}
 		}
-
-		ms := item.MediaSources[0]
-		detail := storage.MediaDetail{
-			ItemID:    itemID,
-			SourceID:  ms.ID,
-			Container: ms.Container,
-		}
-		for _, stream := range ms.MediaStreams {
-			if stream.Type == "Subtitle" {
-				detail.Subtitles = append(detail.Subtitles, storage.SubtitleInfo{
-					Index:      stream.Index,
-					Language:   stream.Language,
-					Title:      stream.Title,
-					IsExternal: stream.IsExternal,
-					Codec:      stream.Codec,
-				})
-			}
-		}
-		m.svc.Store().SetMediaDetail(detail)
-		return detailMsg{id: itemID, detail: &detail}
+		return detailMsg{id: itemID, detail: detail}
 	}
 }
 
@@ -519,11 +485,7 @@ func (m *Model) loadVisibleImages() tea.Cmd {
 		statusWidth = 28
 	}
 	contentWidth := m.width - statusWidth
-	coverWidth := contentWidth - 4
-	coverHeight := m.height - 11
-	if coverHeight < 8 {
-		coverHeight = m.height - 8
-	}
+	coverWidth, coverHeight := m.coverFrame(contentWidth, m.height)
 	if coverWidth <= 0 || coverHeight <= 0 {
 		return nil
 	}
@@ -621,18 +583,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.items) > 0 && m.cursor < len(m.items) {
 			item := m.items[m.cursor]
 			return m, m.toggleFavorite(item)
-		}
-
-	case "a":
-		if len(m.items) > 0 && m.cursor < len(m.items) {
-			item := m.items[m.cursor]
-			return m, m.setFavorite(item, true)
-		}
-
-	case "u":
-		if len(m.items) > 0 && m.cursor < len(m.items) {
-			item := m.items[m.cursor]
-			return m, m.setFavorite(item, false)
 		}
 
 	case "c":

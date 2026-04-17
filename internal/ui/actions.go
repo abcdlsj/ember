@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"ember/internal/api"
 	"ember/internal/player"
 	"ember/internal/service"
 	"ember/internal/storage"
@@ -65,11 +64,9 @@ func (m *Model) playItem(item service.MediaItem, fromBeginning bool) (tea.Model,
 	itemID := item.ID
 	mediaSourceID := streamInfo.MediaSourceID
 	sessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
-	client := m.svc.Client()
-	store := m.svc.Store()
 	durationTicks := streamInfo.Duration
 	startPosSec := streamInfo.PositionSec
-	subtitleURLs := buildSubtitleURLs(client, itemID, mediaSourceID, streamInfo.Subtitles)
+	subtitleURLs := streamInfo.SubtitleURLs
 	if fromBeginning {
 		startPosSec = 0
 	}
@@ -82,10 +79,9 @@ func (m *Model) playItem(item service.MediaItem, fromBeginning bool) (tea.Model,
 
 	return m, func() tea.Msg {
 		result := player.PlayWithHook(streamInfo.StreamURL, item.Name, subtitleURLs, startPosSec, func() {
-			_ = client.ReportPlaybackStart(itemID, mediaSourceID, sessionID, startPosSec*10_000_000)
+			_ = m.svc.ReportPlaybackStart(itemID, mediaSourceID, sessionID, startPosSec)
 		})
-		store.UpdatePlaybackPosition(itemID, result.PositionSec, durationTicks/10000000)
-		err := client.ReportPlaybackStopped(itemID, mediaSourceID, sessionID, result.PositionSec*10_000_000)
+		err := m.svc.ReportPlaybackStopped(itemID, mediaSourceID, sessionID, result.PositionSec, durationTicks)
 
 		return playDoneMsg{
 			itemID:        itemID,
@@ -110,80 +106,25 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		episodes, err := m.svc.Client().GetEpisodes(seriesID, seasonID)
-		if err != nil {
-			return playDoneMsg{err: err}
-		}
-		if len(episodes) == 0 {
-			return playDoneMsg{err: fmt.Errorf("no episodes found")}
-		}
-
-		startIdx := -1
-		for i, ep := range episodes {
-			if ep.ID == item.ID {
-				startIdx = i
-				break
-			}
-		}
-		if startIdx == -1 {
-			startIdx = 0
-		}
-
-		var urls []string
-		var currentItem *service.MediaItem
-		var currentItemID string
-
-		for i := startIdx; i < len(episodes); i++ {
-			ep := episodes[i]
-			epFull, err := m.svc.Client().GetItem(ep.ID)
-			if err != nil || len(epFull.MediaSources) == 0 {
-				continue
-			}
-
-			ms := epFull.MediaSources[0]
-			url := m.svc.Client().StreamURL(ep.ID, ms.ID, ms.Container)
-			urls = append(urls, url)
-
-			if i == startIdx {
-				svcItem := convertRawToService(*epFull)
-				currentItem = &svcItem
-				currentItemID = ep.ID
-			}
-		}
-
-		if len(urls) == 0 {
-			return playDoneMsg{err: fmt.Errorf("no playable episodes found")}
-		}
-
-		if currentItem == nil {
-			return playDoneMsg{err: fmt.Errorf("no playable item found")}
-		}
-
-		title := item.SeriesName
-		if title == "" {
-			title = item.Name
-		}
-
-		streamInfo, err := m.svc.GetStreamInfoForItem(*currentItem)
+		plan, err := m.svc.BuildContinuousPlayback(item)
 		if err != nil {
 			return playDoneMsg{err: err}
 		}
 
-		startPosSec := streamInfo.PositionSec
+		startPosSec := plan.StreamInfo.PositionSec
 		playSessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
-		result := player.PlayMultipleWithHook(urls, title, nil, startPosSec, startIdx, func() {
-			_ = m.svc.Client().ReportPlaybackStart(currentItemID, streamInfo.MediaSourceID, playSessionID, startPosSec*10_000_000)
+		result := player.PlayMultipleWithHook(plan.URLs, plan.Title, nil, startPosSec, plan.StartIndex, func() {
+			_ = m.svc.ReportPlaybackStart(plan.CurrentItem.ID, plan.StreamInfo.MediaSourceID, playSessionID, startPosSec)
 		})
 
-		durationTicks := currentItem.RunTimeTicks
+		durationTicks := plan.CurrentItem.RunTimeTicks
 		reportOK := result.Err == nil
-		if currentItemID != "" && result.PositionSec > 0 {
-			m.svc.Store().UpdatePlaybackPosition(currentItemID, result.PositionSec, durationTicks/10000000)
-			reportOK = m.svc.Client().ReportPlaybackStopped(currentItemID, streamInfo.MediaSourceID, playSessionID, result.PositionSec*10_000_000) == nil && reportOK
+		if plan.CurrentItem.ID != "" && result.PositionSec > 0 {
+			reportOK = m.svc.ReportPlaybackStopped(plan.CurrentItem.ID, plan.StreamInfo.MediaSourceID, playSessionID, result.PositionSec, durationTicks) == nil && reportOK
 		}
 
 		return playDoneMsg{
-			itemID:        currentItemID,
+			itemID:        plan.CurrentItem.ID,
 			positionSec:   result.PositionSec,
 			durationTicks: durationTicks,
 			reportOK:      reportOK,
@@ -213,65 +154,29 @@ func (m *Model) goBack() (tea.Model, tea.Cmd) {
 
 func (m *Model) goToSeason(item service.MediaItem) tea.Cmd {
 	return func() tea.Msg {
-		if item.SeriesID == "" {
-			fullItem, err := m.svc.Client().GetItem(item.ID)
-			if err != nil {
-				return itemsMsg{err: fmt.Errorf("no series info")}
-			}
-			item.SeriesID = fullItem.SeriesID
-			item.SeasonID = fullItem.SeasonID
-			if item.SeasonID == "" {
-				item.SeasonID = fullItem.ParentID
-			}
-		}
-
-		if item.SeriesID == "" || item.SeasonID == "" {
-			return itemsMsg{err: fmt.Errorf("no season info")}
-		}
-
-		items, err := m.svc.Client().GetEpisodes(item.SeriesID, item.SeasonID)
+		list, seriesID, seasonID, err := m.svc.ResolveSeason(item)
 		if err != nil {
 			return itemsMsg{err: err}
 		}
 
 		return itemsMsg{
-			items: convertRawItems(items),
-			total: len(items),
-			view:  &viewState{mode: viewEpisodes, seriesID: item.SeriesID, seasonID: item.SeasonID},
+			items: list.Items,
+			total: list.Total,
+			view:  &viewState{mode: viewEpisodes, seriesID: seriesID, seasonID: seasonID},
 		}
 	}
 }
 
 func (m *Model) goToSeries(item service.MediaItem) tea.Cmd {
 	return func() tea.Msg {
-		seriesID := item.SeriesID
-		if seriesID == "" && item.ParentID != "" {
-			seriesID = item.ParentID
-		}
-
-		if seriesID == "" {
-			fullItem, err := m.svc.Client().GetItem(item.ID)
-			if err != nil {
-				return itemsMsg{err: fmt.Errorf("no series info")}
-			}
-			seriesID = fullItem.SeriesID
-			if seriesID == "" {
-				seriesID = fullItem.ParentID
-			}
-		}
-
-		if seriesID == "" {
-			return itemsMsg{err: fmt.Errorf("no series info")}
-		}
-
-		items, err := m.svc.Client().GetSeasons(seriesID)
+		list, seriesID, err := m.svc.ResolveSeries(item)
 		if err != nil {
 			return itemsMsg{err: err}
 		}
 
 		return itemsMsg{
-			items: convertRawItems(items),
-			total: len(items),
+			items: list.Items,
+			total: list.Total,
 			view:  &viewState{mode: viewSeasons, seriesID: seriesID},
 		}
 	}
@@ -447,84 +352,4 @@ func (m *Model) pingServers() tea.Cmd {
 
 		return pingServersMsg{latencies: latencies}
 	}
-}
-
-func convertRawItems(items []api.MediaItem) []service.MediaItem {
-	result := make([]service.MediaItem, len(items))
-	for i, item := range items {
-		result[i] = convertRawToService(item)
-	}
-	return result
-}
-
-func convertRawToService(item api.MediaItem) service.MediaItem {
-	var userData *service.UserData
-	if item.UserData != nil {
-		pct := 0
-		if item.RunTimeTicks > 0 && item.UserData.PlaybackPositionTicks > 0 {
-			pct = int(float64(item.UserData.PlaybackPositionTicks) / float64(item.RunTimeTicks) * 100)
-		}
-		userData = &service.UserData{
-			PlaybackPositionTicks: item.UserData.PlaybackPositionTicks,
-			Played:                item.UserData.Played,
-			IsFavorite:            item.UserData.IsFavorite,
-			LastPlayedDate:        item.UserData.LastPlayedDate,
-			PlaybackPositionPct:   pct,
-		}
-	}
-
-	mediaSources := make([]service.MediaSource, 0, len(item.MediaSources))
-	for _, source := range item.MediaSources {
-		subtitles := make([]service.SubtitleInfo, 0, len(source.MediaStreams))
-		for _, stream := range source.MediaStreams {
-			if stream.Type != "Subtitle" {
-				continue
-			}
-			subtitles = append(subtitles, service.SubtitleInfo{
-				Index:      stream.Index,
-				Language:   stream.Language,
-				Title:      stream.Title,
-				IsExternal: stream.IsExternal,
-				IsDefault:  stream.IsDefault,
-				Codec:      stream.Codec,
-			})
-		}
-
-		mediaSources = append(mediaSources, service.MediaSource{
-			ID:        source.ID,
-			Container: source.Container,
-			Protocol:  source.Protocol,
-			Subtitles: subtitles,
-		})
-	}
-
-	return service.MediaItem{
-		ID:           item.ID,
-		Name:         item.Name,
-		Type:         item.Type,
-		Year:         item.Year,
-		SeriesID:     item.SeriesID,
-		SeriesName:   item.SeriesName,
-		SeasonID:     item.SeasonID,
-		SeasonName:   item.SeasonName,
-		ParentID:     item.ParentID,
-		IndexNumber:  item.IndexNumber,
-		Overview:     item.Overview,
-		RunTimeTicks: item.RunTimeTicks,
-		UserData:     userData,
-		MediaSources: mediaSources,
-		Playable:     item.Type == "Movie" || item.Type == "Episode" || item.Type == "Video",
-		Browsable:    item.Type == "Series" || item.Type == "Season" || item.Type == "CollectionFolder" || item.Type == "Folder" || item.Type == "BoxSet",
-	}
-}
-
-func buildSubtitleURLs(client *api.Client, itemID, sourceID string, subtitles []service.SubtitleInfo) []string {
-	urls := make([]string, 0, len(subtitles))
-	for _, subtitle := range subtitles {
-		if !subtitle.IsExternal {
-			continue
-		}
-		urls = append(urls, client.SubtitleURL(itemID, sourceID, subtitle.Index, subtitle.Codec))
-	}
-	return urls
 }

@@ -84,8 +84,17 @@ type StreamInfo struct {
 	Duration      int64          `json:"duration,omitempty"`
 	PositionSec   int64          `json:"positionSec,omitempty"`
 	Subtitles     []SubtitleInfo `json:"subtitles,omitempty"`
+	SubtitleURLs  []string       `json:"subtitleUrls,omitempty"`
 	IsFavorite    bool           `json:"isFavorite"`
 	MediaSourceID string         `json:"mediaSourceId,omitempty"`
+}
+
+type ContinuousPlaybackPlan struct {
+	Title       string      `json:"title"`
+	StartIndex  int         `json:"startIndex"`
+	URLs        []string    `json:"urls"`
+	CurrentItem MediaItem   `json:"currentItem"`
+	StreamInfo  *StreamInfo `json:"streamInfo,omitempty"`
 }
 
 type ServerInfo struct {
