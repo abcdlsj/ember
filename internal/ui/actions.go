@@ -111,8 +111,11 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 
 	return func() tea.Msg {
 		episodes, err := m.svc.Client().GetEpisodes(seriesID, seasonID)
-		if err != nil || len(episodes) == 0 {
-			return playDoneMsg{}
+		if err != nil {
+			return playDoneMsg{err: err}
+		}
+		if len(episodes) == 0 {
+			return playDoneMsg{err: fmt.Errorf("no episodes found")}
 		}
 
 		startIdx := -1
@@ -149,11 +152,11 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 		}
 
 		if len(urls) == 0 {
-			return playDoneMsg{}
+			return playDoneMsg{err: fmt.Errorf("no playable episodes found")}
 		}
 
 		if currentItem == nil {
-			return playDoneMsg{}
+			return playDoneMsg{err: fmt.Errorf("no playable item found")}
 		}
 
 		title := item.SeriesName
@@ -163,7 +166,7 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 
 		streamInfo, err := m.svc.GetStreamInfoForItem(*currentItem)
 		if err != nil {
-			return playDoneMsg{}
+			return playDoneMsg{err: err}
 		}
 
 		startPosSec := streamInfo.PositionSec

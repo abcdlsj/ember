@@ -200,14 +200,15 @@ func (m *Model) renderSearch() string {
 	inputLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 
 	queryLine := lipgloss.JoinHorizontal(lipgloss.Left, inputLabelStyle.Render("Query:")+" ", m.searchInput.View())
-	current := "Current query: none"
+	lines := []string{title, queryLine, labelStyle.Render("Search by title or keyword.")}
 	if strings.TrimSpace(m.lastSearchQuery) != "" {
-		current = `Current query: "` + m.lastSearchQuery + `"`
+		lines = append(lines, labelStyle.Render(`Last query: "`+m.lastSearchQuery+`"`))
 	}
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
 		"[Enter] search  [Esc] cancel",
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, title, queryLine, labelStyle.Render(current), labelStyle.Render("Search by title or keyword."), hint)
+	lines = append(lines, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func (m *Model) renderServerManage() string {
@@ -432,13 +433,10 @@ func (m *Model) renderStatus(width, height int) string {
 		"",
 		divider,
 		dimStyle.Render("Actions:"),
-		dimStyle.Render(" ↵   open"),
-		dimStyle.Render(" p   play"),
-		dimStyle.Render(" r   refresh"),
-		dimStyle.Render(" 4,/ search"),
-		dimStyle.Render(" ?   help"),
-		dimStyle.Render(" q   quit"),
 	)
+	for _, action := range m.statusActions() {
+		lines = append(lines, dimStyle.Render(action))
+	}
 
 	return style.Render(strings.Join(lines, "\n"))
 }
@@ -640,6 +638,41 @@ func (m *Model) loadedItemsText(total int) string {
 	default:
 		return fmt.Sprintf("%d items", total)
 	}
+}
+
+func (m *Model) statusActions() []string {
+	actions := []string{
+		" ←→  move",
+		" ↵   open",
+		" esc back",
+	}
+
+	item, ok := m.currentItem()
+	if ok {
+		if item.Playable {
+			actions = append(actions, " p   play", " R   replay")
+		}
+		if item.Type == "Episode" {
+			actions = append(actions, " c   continuous", " s   season", " S   series")
+		} else if item.Type == "Season" {
+			actions = append(actions, " S   series")
+		}
+		if item.UserData != nil && item.UserData.IsFavorite {
+			actions = append(actions, " u   unfav")
+		} else {
+			actions = append(actions, " f   favorite")
+		}
+	}
+
+	actions = append(actions, " r   refresh", " 4,/ search", " ?   help", " q   quit")
+	return actions
+}
+
+func (m *Model) currentItem() (service.MediaItem, bool) {
+	if m.cursor < 0 || m.cursor >= len(m.items) {
+		return service.MediaItem{}, false
+	}
+	return m.items[m.cursor], true
 }
 
 func formatDuration(sec int64) string {
