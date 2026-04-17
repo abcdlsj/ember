@@ -174,44 +174,15 @@ func (m *Model) renderItemInfo(item service.MediaItem, width int) string {
 }
 
 func (m *Model) renderSearch() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render("Advanced Search")
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render("Search")
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
+	inputLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 
-	queryLabel := "Query:"
-	yearLabel := "Year :"
-	if m.searchFocus == 0 {
-		queryLabel = activeStyle.Render(queryLabel)
-	} else {
-		queryLabel = labelStyle.Render(queryLabel)
-	}
-	if m.searchFocus == 1 {
-		yearLabel = activeStyle.Render(yearLabel)
-	} else {
-		yearLabel = labelStyle.Render(yearLabel)
-	}
-
-	queryLine := lipgloss.JoinHorizontal(lipgloss.Left, queryLabel+" ", m.searchInput.View())
-	yearLine := lipgloss.JoinHorizontal(lipgloss.Left, yearLabel+" ", m.searchYearInput.View())
-
-	typeLabel := m.searchFilters.ItemType
-	if typeLabel == "" {
-		typeLabel = "all"
-	}
-	playedLabel := m.searchFilters.PlayedFilter
-	if playedLabel == "" {
-		playedLabel = "all"
-	}
-	favLabel := "no"
-	if m.searchFilters.FavoriteOnly {
-		favLabel = "yes"
-	}
-	filterLine := valueStyle.Render(fmt.Sprintf("Type[%s]  Played[%s]  FavOnly[%s]", typeLabel, playedLabel, favLabel))
+	queryLine := lipgloss.JoinHorizontal(lipgloss.Left, inputLabelStyle.Render("Query:")+" ", m.searchInput.View())
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
-		"[Tab] field  [t] type  [p] played  [f] fav-only  [c] clear  [Enter] search  [Esc] cancel",
+		"[c] clear  [Enter] search  [Esc] cancel",
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, title, queryLine, yearLine, labelStyle.Render("Filters:"), filterLine, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, title, queryLine, labelStyle.Render("Search by title or keyword."), hint)
 }
 
 func (m *Model) renderServerManage() string {

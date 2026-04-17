@@ -29,6 +29,9 @@ func init() {
 
 func SetEnabled(v bool) {
 	enabled = v
+	if logger == nil {
+		return
+	}
 	if enabled {
 		logger.SetLevel(log.DebugLevel)
 	} else {
@@ -41,7 +44,7 @@ func IsEnabled() bool {
 }
 
 func MPV(path string, args []string) {
-	if !enabled {
+	if !enabled || logger == nil {
 		return
 	}
 
@@ -52,7 +55,7 @@ func MPV(path string, args []string) {
 }
 
 func HTTP(method, url string, status int, body string) {
-	if !enabled {
+	if !enabled || logger == nil {
 		return
 	}
 
@@ -61,5 +64,18 @@ func HTTP(method, url string, status int, body string) {
 		"url", url,
 		"status", status,
 		"body", body,
+	)
+}
+
+func ImageError(url string, status int, contentType string, err error) {
+	if !enabled || logger == nil || err == nil {
+		return
+	}
+
+	logger.Debug("Image request failed",
+		"url", url,
+		"status", status,
+		"content_type", contentType,
+		"error", err.Error(),
 	)
 }

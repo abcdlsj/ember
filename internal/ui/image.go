@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ember/internal/logging"
 
 	"github.com/charmbracelet/lipgloss"
 	chafa "github.com/ploMP4/chafa-go"
@@ -22,28 +25,40 @@ func fetchImage(url string) (image.Image, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
+		logging.ImageError(url, 0, "", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= http.StatusBadRequest {
+		err = fmt.Errorf("image request failed with status %d", resp.StatusCode)
+		logging.ImageError(url, resp.StatusCode, resp.Header.Get("Content-Type"), err)
+		return nil, err
+	}
+
 	img, _, err := image.Decode(resp.Body)
+	if err != nil {
+		logging.ImageError(url, resp.StatusCode, resp.Header.Get("Content-Type"), err)
+	}
 	return img, err
 }
 
-func RenderImage(url string, width, height int) string {
-	img, err := fetchImage(url)
-	if err != nil {
+func RenderImage(urls []string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+
+	filtered := make([]string, 0, len(urls))
+	for _, url := range urls {
+		if strings.TrimSpace(url) != "" {
+			filtered = append(filtered, url)
+		}
+	}
+	if len(filtered) == 0 {
 		return renderPlaceholder(width, height)
 	}
 
-	bounds := img.Bounds()
-	imgWidth := bounds.Dx()
-	imgHeight := bounds.Dy()
-
-	renderWidth, renderHeight := calculateRenderSize(imgWidth, imgHeight, width, height)
-
-	cacheKey := url
-
+	cacheKey := fmt.Sprintf("%s|%dx%d", strings.Join(filtered, "\n"), width, height)
 	imageCacheMu.RLock()
 	if cached, ok := imageCache[cacheKey]; ok {
 		imageCacheMu.RUnlock()
@@ -51,13 +66,37 @@ func RenderImage(url string, width, height int) string {
 	}
 	imageCacheMu.RUnlock()
 
-	result := renderChafa(img, renderWidth, renderHeight)
+	for _, url := range filtered {
+		img, err := fetchImage(url)
+		if err != nil {
+			continue
+		}
 
+		bounds := img.Bounds()
+		imgWidth := bounds.Dx()
+		imgHeight := bounds.Dy()
+
+		renderWidth, renderHeight := calculateRenderSize(imgWidth, imgHeight, width, height)
+		if renderWidth <= 0 || renderHeight <= 0 {
+			continue
+		}
+
+		result := renderChafa(img, renderWidth, renderHeight)
+		if strings.TrimSpace(result) == "" {
+			continue
+		}
+
+		imageCacheMu.Lock()
+		imageCache[cacheKey] = result
+		imageCacheMu.Unlock()
+		return result
+	}
+
+	placeholder := renderPlaceholder(width, height)
 	imageCacheMu.Lock()
-	imageCache[cacheKey] = result
+	imageCache[cacheKey] = placeholder
 	imageCacheMu.Unlock()
-
-	return result
+	return placeholder
 }
 
 func calculateRenderSize(imgWidth, imgHeight, maxWidth, maxHeight int) (int, int) {

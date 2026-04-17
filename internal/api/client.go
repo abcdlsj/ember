@@ -32,21 +32,23 @@ type Client struct {
 }
 
 type MediaItem struct {
-	ID           string        `json:"Id"`
-	Name         string        `json:"Name"`
-	Type         string        `json:"Type"`
-	Year         int           `json:"ProductionYear,omitempty"`
-	Overview     string        `json:"Overview,omitempty"`
-	SeriesID     string        `json:"SeriesId,omitempty"`
-	SeriesName   string        `json:"SeriesName,omitempty"`
-	SeasonID     string        `json:"SeasonId,omitempty"`
-	SeasonName   string        `json:"SeasonName,omitempty"`
-	ParentID     string        `json:"ParentId,omitempty"`
-	IndexNumber  int           `json:"IndexNumber,omitempty"`
-	RunTimeTicks int64         `json:"RunTimeTicks,omitempty"`
-	MediaSources []MediaSource `json:"MediaSources,omitempty"`
-	ImageTags    ImageTags     `json:"ImageTags,omitempty"`
-	UserData     *UserData     `json:"UserData,omitempty"`
+	ID                    string        `json:"Id"`
+	Name                  string        `json:"Name"`
+	Type                  string        `json:"Type"`
+	Year                  int           `json:"ProductionYear,omitempty"`
+	Overview              string        `json:"Overview,omitempty"`
+	SeriesID              string        `json:"SeriesId,omitempty"`
+	SeriesName            string        `json:"SeriesName,omitempty"`
+	SeriesPrimaryImageTag string        `json:"SeriesPrimaryImageTag,omitempty"`
+	SeasonID              string        `json:"SeasonId,omitempty"`
+	SeasonName            string        `json:"SeasonName,omitempty"`
+	ParentID              string        `json:"ParentId,omitempty"`
+	IndexNumber           int           `json:"IndexNumber,omitempty"`
+	RunTimeTicks          int64         `json:"RunTimeTicks,omitempty"`
+	MediaSources          []MediaSource `json:"MediaSources,omitempty"`
+	ImageTags             ImageTags     `json:"ImageTags,omitempty"`
+	BackdropImageTags     []string      `json:"BackdropImageTags,omitempty"`
+	UserData              *UserData     `json:"UserData,omitempty"`
 }
 
 func (m *MediaItem) imageID() string {
@@ -74,6 +76,7 @@ type UserData struct {
 
 type ImageTags struct {
 	Primary string `json:"Primary,omitempty"`
+	Thumb   string `json:"Thumb,omitempty"`
 }
 
 type MediaSource struct {
@@ -131,8 +134,8 @@ func baseParams(limit int) url.Values {
 	return url.Values{
 		"Limit":            {fmt.Sprintf("%d", limit)},
 		"Fields":           {"Overview,MediaSources,ProductionYear"},
-		"ImageTypeLimit":   {"1"},
-		"EnableImageTypes": {"Primary"},
+		"ImageTypeLimit":   {"3"},
+		"EnableImageTypes": {"Primary,Thumb,Backdrop"},
 	}
 }
 

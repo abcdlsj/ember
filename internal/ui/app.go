@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -53,10 +52,7 @@ type Model struct {
 	currentLib *service.MediaItem
 
 	searchInput     textinput.Model
-	searchYearInput textinput.Model
-	searchFocus     int // 0=query, 1=year
 	lastSearchQuery string
-	searchFilters   SearchFilters
 	spinner         spinner.Model
 	status          string
 	latency         time.Duration
@@ -80,13 +76,6 @@ type Model struct {
 	serverLatencies  map[int]time.Duration
 	pingInProgress   bool
 	prevServerPrefix string
-}
-
-type SearchFilters struct {
-	ItemType     string // "", movie, series, episode
-	PlayedFilter string // "", unplayed, played
-	FavoriteOnly bool
-	Year         int
 }
 
 // NavState represents navigation history
@@ -156,16 +145,6 @@ func New(svc *service.MediaService) *Model {
 	ti.PromptStyle = inputPromptStyle
 	ti.Cursor.Style = inputCursorStyle
 
-	yi := textinput.New()
-	yi.Prompt = ""
-	yi.Placeholder = "Year"
-	yi.CharLimit = 4
-	yi.Width = 8
-	yi.TextStyle = inputTextStyle
-	yi.PlaceholderStyle = inputPlaceholderStyle
-	yi.PromptStyle = inputPromptStyle
-	yi.Cursor.Style = inputCursorStyle
-
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -181,7 +160,6 @@ func New(svc *service.MediaService) *Model {
 		state:           initialState,
 		pageSize:        20,
 		searchInput:     ti,
-		searchYearInput: yi,
 		spinner:         sp,
 		status:          "Connecting...",
 		coverCache:      make(map[string]string),
@@ -251,13 +229,9 @@ func (m *Model) loadHistory(page int) tea.Cmd {
 func (m *Model) searchItems() tea.Cmd {
 	return func() tea.Msg {
 		list, err := m.svc.SearchWithOptions(service.SearchQuery{
-			Query:        m.lastSearchQuery,
-			Limit:        m.pageSize,
-			Page:         m.page,
-			ItemType:     m.searchFilters.ItemType,
-			PlayedFilter: m.searchFilters.PlayedFilter,
-			FavoriteOnly: m.searchFilters.FavoriteOnly,
-			Year:         m.searchFilters.Year,
+			Query: m.lastSearchQuery,
+			Limit: m.pageSize,
+			Page:  m.page,
 		})
 		if err != nil {
 			return itemsMsg{err: err}
@@ -325,13 +299,19 @@ func (m *Model) pingServer() tea.Cmd {
 
 func (m *Model) loadImage(item service.MediaItem, width, height int) tea.Cmd {
 	return func() tea.Msg {
-		// For TUI, we still need to fetch and convert image to ASCII/terminal format
-		// This is kept from original implementation
-		url := item.ImageURL
-		if url == "" {
+		if width <= 0 || height <= 0 {
 			return imageMsg{id: item.ID, image: ""}
 		}
-		img := RenderImage(url, width, height)
+
+		urls := item.ImageURLs
+		if len(urls) == 0 && item.ImageURL != "" {
+			urls = []string{item.ImageURL}
+		}
+		if len(urls) == 0 {
+			return imageMsg{id: item.ID, image: ""}
+		}
+
+		img := RenderImage(urls, width, height)
 		return imageMsg{id: item.ID, image: img}
 	}
 }
@@ -475,7 +455,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) loadVisibleImages() tea.Cmd {
-	if len(m.items) == 0 {
+	if len(m.items) == 0 || m.width <= 0 || m.height <= 0 {
 		return nil
 	}
 
@@ -497,6 +477,9 @@ func (m *Model) loadVisibleImages() tea.Cmd {
 	contentWidth := m.width - statusWidth
 	coverWidth := contentWidth - 4
 	coverHeight := m.height - 6
+	if coverWidth <= 0 || coverHeight <= 0 {
+		return nil
+	}
 
 	for i := start; i < end; i++ {
 		item := m.items[i]
@@ -584,7 +567,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "4", "/":
 		m.state = StateSearching
-		m.searchFocus = 0
 		return m, tea.Batch(m.searchInput.Focus(), textinput.Blink)
 
 	case "f":
@@ -661,93 +643,32 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.state = StateBrowsing
 		m.searchInput.Blur()
-		m.searchYearInput.Blur()
 		return m, nil
 
 	case "enter":
 		m.lastSearchQuery = strings.TrimSpace(m.searchInput.Value())
-		m.searchFilters.Year = parseSearchYear(m.searchYearInput.Value())
-		if !m.hasSearchCriteria() {
-			m.status = "Enter keyword or set at least one filter"
+		if m.lastSearchQuery == "" {
+			m.status = "Enter keyword to search"
 			return m, nil
 		}
 		m.page = 0
 		m.state = StateLoading
 		m.section = SectionSearch
 		m.searchInput.Blur()
-		m.searchYearInput.Blur()
 		return m, m.searchItems()
 
-	case "tab", "shift+tab":
-		m.searchFocus = 1 - m.searchFocus
-		return m, m.focusSearchField()
-
-	case "t":
-		switch m.searchFilters.ItemType {
-		case "":
-			m.searchFilters.ItemType = "movie"
-		case "movie":
-			m.searchFilters.ItemType = "series"
-		case "series":
-			m.searchFilters.ItemType = "episode"
-		default:
-			m.searchFilters.ItemType = ""
-		}
-		return m, nil
-
-	case "p":
-		switch m.searchFilters.PlayedFilter {
-		case "":
-			m.searchFilters.PlayedFilter = "unplayed"
-		case "unplayed":
-			m.searchFilters.PlayedFilter = "played"
-		default:
-			m.searchFilters.PlayedFilter = ""
-		}
-		return m, nil
-
-	case "f":
-		m.searchFilters.FavoriteOnly = !m.searchFilters.FavoriteOnly
-		return m, nil
-
 	case "c":
-		m.searchFilters = SearchFilters{}
-		m.searchYearInput.SetValue("")
+		m.searchInput.SetValue("")
 		return m, nil
 	}
 
 	var cmd tea.Cmd
-	if m.searchFocus == 1 {
-		m.searchYearInput, cmd = m.searchYearInput.Update(msg)
-	} else {
-		m.searchInput, cmd = m.searchInput.Update(msg)
-	}
+	m.searchInput, cmd = m.searchInput.Update(msg)
 	return m, cmd
 }
 
-func (m *Model) focusSearchField() tea.Cmd {
-	if m.searchFocus == 1 {
-		m.searchInput.Blur()
-		return m.searchYearInput.Focus()
-	}
-	m.searchYearInput.Blur()
-	return m.searchInput.Focus()
-}
-
 func (m *Model) hasSearchCriteria() bool {
-	return m.lastSearchQuery != "" ||
-		m.searchFilters.ItemType != "" ||
-		m.searchFilters.PlayedFilter != "" ||
-		m.searchFilters.FavoriteOnly ||
-		m.searchFilters.Year > 0
-}
-
-func parseSearchYear(v string) int {
-	y, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || y <= 0 {
-		return 0
-	}
-	return y
+	return strings.TrimSpace(m.lastSearchQuery) != ""
 }
 
 func (m *Model) handleServerManageKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

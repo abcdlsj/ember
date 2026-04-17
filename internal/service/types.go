@@ -22,6 +22,7 @@ type MediaItem struct {
 	Overview     string        `json:"overview,omitempty"`
 	RunTimeTicks int64         `json:"runTimeTicks,omitempty"`
 	ImageURL     string        `json:"imageUrl,omitempty"`     // 400px for TUI
+	ImageURLs    []string      `json:"imageUrls,omitempty"`    // TUI fallback chain
 	ImageURLHigh string        `json:"imageUrlHigh,omitempty"` // 800px for Web UI
 	BackdropURL  string        `json:"backdropUrl,omitempty"`
 	UserData     *UserData     `json:"userData,omitempty"`
@@ -178,30 +179,10 @@ type PlaylistEpisode struct {
 
 // convertAPIItem converts an API MediaItem to service MediaItem
 func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
-	imageURL := ""
-	imageURLHigh := ""
-	if item.ImageTags.Primary != "" || item.SeriesID != "" || item.SeasonID != "" {
-		imageID := item.ID
-		if item.ImageTags.Primary == "" {
-			if item.SeriesID != "" {
-				imageID = item.SeriesID
-			} else if item.SeasonID != "" {
-				imageID = item.SeasonID
-			} else if item.ParentID != "" {
-				imageID = item.ParentID
-			}
-		}
-		imageURL = fmt.Sprintf("%s/emby/Items/%s/Images/Primary?maxWidth=400&api_key=%s",
-			imageBaseURL, imageID, token)
-		imageURLHigh = fmt.Sprintf("%s/emby/Items/%s/Images/Primary?maxWidth=800&api_key=%s",
-			imageBaseURL, imageID, token)
-	}
-
-	backdropURL := ""
-	if item.SeriesID != "" {
-		backdropURL = fmt.Sprintf("%s/emby/Items/%s/Images/Backdrop?maxWidth=800&api_key=%s",
-			imageBaseURL, item.SeriesID, token)
-	}
+	imageURLs := buildImageCandidateURLs(item, imageBaseURL, token, 400)
+	imageURL := firstImageURL(imageURLs)
+	imageURLHigh := firstImageURL(buildImageCandidateURLs(item, imageBaseURL, token, 800))
+	backdropURL := buildBackdropURL(item, imageBaseURL, token)
 
 	playable := item.Type == "Movie" || item.Type == "Episode" || item.Type == "Video"
 	browsable := item.Type == "Series" || item.Type == "Season" ||
@@ -244,6 +225,7 @@ func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 		Overview:     item.Overview,
 		RunTimeTicks: item.RunTimeTicks,
 		ImageURL:     imageURL,
+		ImageURLs:    imageURLs,
 		ImageURLHigh: imageURLHigh,
 		BackdropURL:  backdropURL,
 		UserData:     userData,
@@ -251,4 +233,66 @@ func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 		Playable:     playable,
 		Browsable:    browsable,
 	}
+}
+
+func buildImageCandidateURLs(item api.MediaItem, imageBaseURL, token string, width int) []string {
+	var urls []string
+
+	if item.ImageTags.Primary != "" {
+		urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.ID, "Primary", width, token))
+	}
+	if item.ImageTags.Thumb != "" {
+		urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.ID, "Thumb", width, token))
+	}
+	if item.SeriesPrimaryImageTag != "" && item.SeriesID != "" {
+		urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.SeriesID, "Primary", width, token))
+	}
+	if item.SeasonID != "" {
+		urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.SeasonID, "Primary", width, token))
+	}
+	if item.ParentID != "" {
+		urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.ParentID, "Primary", width, token))
+	}
+	if len(item.BackdropImageTags) > 0 {
+		urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.ID, "Backdrop", width, token))
+	}
+	if item.SeriesID != "" {
+		urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.SeriesID, "Backdrop", width, token))
+	}
+
+	return urls
+}
+
+func buildBackdropURL(item api.MediaItem, imageBaseURL, token string) string {
+	if len(item.BackdropImageTags) > 0 {
+		return buildImageURL(imageBaseURL, item.ID, "Backdrop", 800, token)
+	}
+	if item.SeriesID != "" {
+		return buildImageURL(imageBaseURL, item.SeriesID, "Backdrop", 800, token)
+	}
+	return ""
+}
+
+func buildImageURL(imageBaseURL, itemID, imageType string, width int, token string) string {
+	return fmt.Sprintf("%s/emby/Items/%s/Images/%s?maxWidth=%d&api_key=%s",
+		imageBaseURL, itemID, imageType, width, token)
+}
+
+func appendUniqueImageURL(urls []string, url string) []string {
+	if url == "" {
+		return urls
+	}
+	for _, existing := range urls {
+		if existing == url {
+			return urls
+		}
+	}
+	return append(urls, url)
+}
+
+func firstImageURL(urls []string) string {
+	if len(urls) == 0 {
+		return ""
+	}
+	return urls[0]
 }
