@@ -1,12 +1,16 @@
 package player
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
+	"sync/atomic"
+	"time"
 
 	"ember/internal/logging"
 )
@@ -44,11 +48,29 @@ type PlayResult struct {
 	PositionSec int64
 }
 
+type ipcEvent struct {
+	Event string `json:"event"`
+	Name  string `json:"name"`
+	Data  any    `json:"data"`
+}
+
 func Play(url, title string, subtitleURLs []string, startPositionSec int64) PlayResult {
-	return PlayMultiple([]string{url}, title, subtitleURLs, startPositionSec, 0)
+	return play([]string{url}, title, subtitleURLs, startPositionSec, 0, nil)
+}
+
+func PlayWithHook(url, title string, subtitleURLs []string, startPositionSec int64, onStarted func()) PlayResult {
+	return play([]string{url}, title, subtitleURLs, startPositionSec, 0, onStarted)
 }
 
 func PlayMultiple(urls []string, title string, subtitleURLs []string, startPositionSec int64, startIndex int) PlayResult {
+	return play(urls, title, subtitleURLs, startPositionSec, startIndex, nil)
+}
+
+func PlayMultipleWithHook(urls []string, title string, subtitleURLs []string, startPositionSec int64, startIndex int, onStarted func()) PlayResult {
+	return play(urls, title, subtitleURLs, startPositionSec, startIndex, onStarted)
+}
+
+func play(urls []string, title string, subtitleURLs []string, startPositionSec int64, startIndex int, onStarted func()) PlayResult {
 	if mpvPath == "" {
 		return PlayResult{Err: exec.ErrNotFound}
 	}
@@ -56,36 +78,47 @@ func PlayMultiple(urls []string, title string, subtitleURLs []string, startPosit
 		return PlayResult{Err: fmt.Errorf("no URLs provided")}
 	}
 
-	args := buildMPVArgs(title, subtitleURLs, urls, startPositionSec, startIndex)
+	ipcPath := filepath.Join(os.TempDir(), fmt.Sprintf("ember-mpv-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+	_ = os.Remove(ipcPath)
+	defer os.Remove(ipcPath)
+
+	args := buildMPVArgs(title, subtitleURLs, urls, startPositionSec, startIndex, ipcPath)
 	logging.MPV(mpvPath, args)
 
 	cmd := exec.Command(mpvPath, args...)
-	cmd.Stdin = os.Stdin
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return PlayResult{Err: err}
-	}
 	if err := cmd.Start(); err != nil {
 		return PlayResult{Err: err}
 	}
 
-	lastPositionSec := readPlaybackPosition(stdout, startPositionSec)
-	runErr := cmd.Wait()
+	if onStarted != nil {
+		go onStarted()
+	}
 
-	return PlayResult{Err: runErr, PositionSec: lastPositionSec}
+	var position atomic.Int64
+	position.Store(startPositionSec)
+	go observePlaybackPosition(ipcPath, &position)
+
+	runErr := cmd.Wait()
+	return PlayResult{
+		Err:         runErr,
+		PositionSec: position.Load(),
+	}
 }
 
-func buildMPVArgs(title string, subtitleURLs, urls []string, startPositionSec int64, startIndex int) []string {
+func buildMPVArgs(title string, subtitleURLs, urls []string, startPositionSec int64, startIndex int, ipcPath string) []string {
 	args := []string{
 		"--hwdec=auto",
 		"--vo=gpu",
 		"--fullscreen",
+		"--force-window=immediate",
+		"--prefetch-playlist=yes",
+		"--terminal=no",
 		"--title=" + title,
 		"--slang=chi,zho,zh,chs,cht,cn,chinese",
-		"--term-playing-msg=",
-		"--term-status-msg=POS:${time-pos}",
-		"--msg-level=all=no,statusline=status",
+		"--input-ipc-server=" + ipcPath,
 	}
 
 	if startPositionSec > 0 {
@@ -103,42 +136,52 @@ func buildMPVArgs(title string, subtitleURLs, urls []string, startPositionSec in
 	return args
 }
 
-var posRegex = regexp.MustCompile(`POS:(\d+(?:\.\d+)?)`)
+func observePlaybackPosition(ipcPath string, position *atomic.Int64) {
+	conn, err := dialIPC(ipcPath)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
 
-func readPlaybackPosition(r interface{ Read([]byte) (int, error) }, fallback int64) int64 {
-	var lastPos int64
-	buf := make([]byte, 256)
-
-	for {
-		n, err := r.Read(buf)
-		if err != nil {
-			break
-		}
-		if pos := parsePositionFromOutput(buf[:n]); pos > 0 {
-			lastPos = pos
-		}
+	if err := json.NewEncoder(conn).Encode(map[string]any{
+		"command": []any{"observe_property", 1, "time-pos"},
+	}); err != nil {
+		return
 	}
 
-	if lastPos == 0 {
-		return fallback
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
+	for scanner.Scan() {
+		var event ipcEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			continue
+		}
+		if event.Event != "property-change" || event.Name != "time-pos" {
+			continue
+		}
+		sec, ok := event.Data.(float64)
+		if !ok || sec < 0 {
+			continue
+		}
+		position.Store(int64(sec))
 	}
-	return lastPos
 }
 
-func parsePositionFromOutput(data []byte) int64 {
-	matches := posRegex.FindAllStringSubmatch(string(data), -1)
-	if len(matches) == 0 {
-		return 0
+func dialIPC(ipcPath string) (net.Conn, error) {
+	deadline := time.Now().Add(3 * time.Second)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("unix", ipcPath, 200*time.Millisecond)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	last := matches[len(matches)-1]
-	if len(last) < 2 {
-		return 0
+	if lastErr == nil {
+		lastErr = fmt.Errorf("mpv ipc not available")
 	}
-
-	sec, err := strconv.ParseFloat(last[1], 64)
-	if err != nil {
-		return 0
-	}
-	return int64(sec)
+	return nil, lastErr
 }

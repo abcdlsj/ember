@@ -34,7 +34,25 @@ const (
 	StateServerEdit
 )
 
-// Model represents the TUI application state
+type viewMode int
+
+const (
+	viewResume viewMode = iota
+	viewFavorites
+	viewHistory
+	viewSearch
+	viewItems
+	viewSeasons
+	viewEpisodes
+)
+
+type viewState struct {
+	mode     viewMode
+	parentID string
+	seriesID string
+	seasonID string
+}
+
 type Model struct {
 	svc    *service.MediaService
 	width  int
@@ -42,6 +60,7 @@ type Model struct {
 
 	section Section
 	state   State
+	view    viewState
 
 	items      []service.MediaItem
 	totalItems int
@@ -50,6 +69,7 @@ type Model struct {
 	cursor     int
 	navStack   []NavState
 	currentLib *service.MediaItem
+	keepCursor bool
 
 	searchInput     textinput.Model
 	lastSearchQuery string
@@ -60,7 +80,6 @@ type Model struct {
 	coverCache  map[string]string
 	detailCache map[string]*storage.MediaDetail
 
-	// section 级别缓存
 	sectionCache  map[Section][]service.MediaItem
 	sectionCursor map[Section]int
 
@@ -68,7 +87,6 @@ type Model struct {
 	lastReportOK     bool
 	loggingEnabled   bool
 
-	// 服务器管理
 	serverCursor     int
 	serverInputs     []textinput.Model
 	serverFocused    int
@@ -78,20 +96,21 @@ type Model struct {
 	prevServerPrefix string
 }
 
-// NavState represents navigation history
 type NavState struct {
-	Section  Section
-	Items    []service.MediaItem
-	Cursor   int
-	Title    string
-	ParentID string
+	Section    Section
+	View       viewState
+	Items      []service.MediaItem
+	Cursor     int
+	Page       int
+	Title      string
+	CurrentLib *service.MediaItem
 }
 
-// Message types for Bubbletea
 type itemsMsg struct {
 	items []service.MediaItem
 	total int
 	err   error
+	view  *viewState
 }
 
 type imageMsg struct {
@@ -128,7 +147,6 @@ type playDoneMsg struct {
 	reportOK      bool
 }
 
-// New creates a new TUI model
 func New(svc *service.MediaService) *Model {
 	inputTextStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	inputPlaceholderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
@@ -158,6 +176,7 @@ func New(svc *service.MediaService) *Model {
 		svc:             svc,
 		section:         SectionResume,
 		state:           initialState,
+		view:            viewState{mode: viewResume},
 		pageSize:        20,
 		searchInput:     ti,
 		spinner:         sp,
@@ -172,7 +191,6 @@ func New(svc *service.MediaService) *Model {
 	}
 }
 
-// Init initializes the model
 func (m *Model) Init() tea.Cmd {
 	if m.state == StateServerManage {
 		return m.spinner.Tick
@@ -183,8 +201,6 @@ func (m *Model) Init() tea.Cmd {
 		m.spinner.Tick,
 	)
 }
-
-// ==================== Loading Commands ====================
 
 func (m *Model) loadResume() tea.Cmd {
 	return func() tea.Msg {
@@ -319,7 +335,7 @@ func (m *Model) loadImage(item service.MediaItem, width, height int) tea.Cmd {
 func (m *Model) loadDetail(itemID string) tea.Cmd {
 	return func() tea.Msg {
 		if cached, ok := m.svc.Store().GetMediaDetail(itemID); ok {
-			d := cached // copy to avoid reference to loop variable
+			d := cached
 			return detailMsg{id: itemID, detail: &d}
 		}
 
@@ -350,8 +366,6 @@ func (m *Model) loadDetail(itemID string) tea.Cmd {
 	}
 }
 
-// ==================== Update ====================
-
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -367,14 +381,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "Error: " + msg.err.Error()
 		} else {
+			if msg.view != nil {
+				m.view = *msg.view
+			}
 			m.items = msg.items
 			m.totalItems = msg.total
-			m.cursor = 0
+			if len(msg.items) == 0 {
+				m.cursor = 0
+			} else if m.keepCursor && m.cursor < len(msg.items) {
+			} else if m.keepCursor {
+				m.cursor = len(msg.items) - 1
+			} else {
+				m.cursor = 0
+			}
+			m.keepCursor = false
 			m.state = StateBrowsing
 			m.status = fmt.Sprintf("%d items", msg.total)
 			if m.section == SectionResume || m.section == SectionFavorites {
 				m.sectionCache[m.section] = msg.items
-				m.sectionCursor[m.section] = 0
+				m.sectionCursor[m.section] = m.cursor
 			}
 		}
 		return m, m.loadVisibleImages()
@@ -614,6 +639,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := m.items[m.cursor]
 			if item.Type == "Episode" {
 				m.pushNav()
+				m.page = 0
 				m.state = StateLoading
 				return m, m.goToSeason(item)
 			}
@@ -624,6 +650,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := m.items[m.cursor]
 			if item.Type == "Episode" || item.Type == "Season" {
 				m.pushNav()
+				m.page = 0
 				m.state = StateLoading
 				return m, m.goToSeries(item)
 			}
@@ -654,12 +681,9 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.page = 0
 		m.state = StateLoading
 		m.section = SectionSearch
+		m.view = viewState{mode: viewSearch}
 		m.searchInput.Blur()
 		return m, m.searchItems()
-
-	case "c":
-		m.searchInput.SetValue("")
-		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -783,8 +807,6 @@ func (m *Model) handleServerEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			err = m.svc.AddServer(srv.Name, srv.URL, srv.Username, password)
 			m.serverCursor = len(m.svc.GetServers()) - 1
 		} else {
-			// For edit, we don't have UpdateServer with password in service yet
-			// Using the existing one without password change for now
 			err = m.svc.UpdateServer(m.editingServer, srv.Name, srv.URL, srv.Username, password)
 		}
 
@@ -801,5 +823,3 @@ func (m *Model) handleServerEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.serverInputs[m.serverFocused], cmd = m.serverInputs[m.serverFocused].Update(msg)
 	return m, cmd
 }
-
-// ... rest of the file continues with View methods

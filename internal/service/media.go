@@ -9,13 +9,11 @@ import (
 	"ember/internal/storage"
 )
 
-// MediaService provides unified business logic for media operations
 type MediaService struct {
 	client *api.Client
 	store  *storage.Store
 }
 
-// NewMediaService creates a new media service instance
 func NewMediaService(client *api.Client, store *storage.Store) *MediaService {
 	return &MediaService{
 		client: client,
@@ -23,24 +21,17 @@ func NewMediaService(client *api.Client, store *storage.Store) *MediaService {
 	}
 }
 
-// SetClient updates the underlying API client (used when switching servers)
 func (s *MediaService) SetClient(client *api.Client) {
 	s.client = client
 }
 
-// Client returns the current API client
 func (s *MediaService) Client() *api.Client {
 	return s.client
 }
 
-// Store returns the storage instance
 func (s *MediaService) Store() *storage.Store {
 	return s.store
 }
-
-// ==================== Media List Operations ====================
-
-// GetResume returns items to resume watching
 func (s *MediaService) GetResume(limit int) (*MediaList, error) {
 	if limit <= 0 {
 		limit = 20
@@ -60,7 +51,6 @@ func (s *MediaService) GetResume(limit int) (*MediaList, error) {
 	}, nil
 }
 
-// GetFavorites returns favorite items
 func (s *MediaService) GetFavorites(limit int) (*MediaList, error) {
 	if limit <= 0 {
 		limit = 50
@@ -80,7 +70,6 @@ func (s *MediaService) GetFavorites(limit int) (*MediaList, error) {
 	}, nil
 }
 
-// GetLibraries returns media libraries
 func (s *MediaService) GetLibraries() (*MediaList, error) {
 	items, err := s.client.GetLibraries()
 	if err != nil {
@@ -96,7 +85,6 @@ func (s *MediaService) GetLibraries() (*MediaList, error) {
 	}, nil
 }
 
-// GetItems returns items in a parent folder with pagination
 func (s *MediaService) GetItems(parentID string, page, pageSize int) (*MediaList, error) {
 	if pageSize <= 0 {
 		pageSize = 20
@@ -119,7 +107,6 @@ func (s *MediaService) GetItems(parentID string, page, pageSize int) (*MediaList
 	}, nil
 }
 
-// GetSeasons returns seasons for a series
 func (s *MediaService) GetSeasons(seriesID string) (*MediaList, error) {
 	items, err := s.client.GetSeasons(seriesID)
 	if err != nil {
@@ -135,7 +122,6 @@ func (s *MediaService) GetSeasons(seriesID string) (*MediaList, error) {
 	}, nil
 }
 
-// GetEpisodes returns episodes for a season
 func (s *MediaService) GetEpisodes(seriesID, seasonID string) (*MediaList, error) {
 	items, err := s.client.GetEpisodes(seriesID, seasonID)
 	if err != nil {
@@ -151,7 +137,6 @@ func (s *MediaService) GetEpisodes(seriesID, seasonID string) (*MediaList, error
 	}, nil
 }
 
-// Search performs a search query
 func (s *MediaService) Search(query string, limit int) (*MediaList, error) {
 	return s.SearchWithOptions(SearchQuery{
 		Query: query,
@@ -159,7 +144,6 @@ func (s *MediaService) Search(query string, limit int) (*MediaList, error) {
 	})
 }
 
-// SearchWithOptions performs search query with filters and pagination.
 func (s *MediaService) SearchWithOptions(q SearchQuery) (*MediaList, error) {
 	if q.Limit <= 0 {
 		q.Limit = 50
@@ -200,7 +184,6 @@ func (s *MediaService) SearchWithOptions(q SearchQuery) (*MediaList, error) {
 	}, nil
 }
 
-// GetHistory returns watched history ordered by DatePlayed descending.
 func (s *MediaService) GetHistory(page, pageSize int) (*MediaList, error) {
 	if page < 0 {
 		page = 0
@@ -223,7 +206,6 @@ func (s *MediaService) GetHistory(page, pageSize int) (*MediaList, error) {
 	}, nil
 }
 
-// GetItem returns a single item by ID
 func (s *MediaService) GetItem(itemID string) (*MediaItem, error) {
 	item, err := s.client.GetItem(itemID)
 	if err != nil {
@@ -234,59 +216,51 @@ func (s *MediaService) GetItem(itemID string) (*MediaItem, error) {
 	return &converted, nil
 }
 
-// ==================== Playback Operations ====================
-
-// GetStreamInfo returns streaming information for an item
 func (s *MediaService) GetStreamInfo(itemID string) (*StreamInfo, error) {
 	item, err := s.client.GetItem(itemID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get item: %w", err)
 	}
 
+	return s.GetStreamInfoForItem(s.convertItem(*item))
+}
+
+func (s *MediaService) GetStreamInfoForItem(item MediaItem) (*StreamInfo, error) {
 	if len(item.MediaSources) == 0 {
 		return nil, fmt.Errorf("no media source available")
 	}
 
 	ms := item.MediaSources[0]
-
-	// Get saved playback position
-	positionSec := s.store.GetPlaybackPosition(itemID)
-
-	// Build subtitle list
-	subtitles := []SubtitleInfo{}
-	for _, stream := range ms.MediaStreams {
-		if stream.Type == "Subtitle" {
-			subtitles = append(subtitles, SubtitleInfo{
-				Index:      stream.Index,
-				Language:   stream.Language,
-				Title:      stream.Title,
-				IsExternal: stream.IsExternal,
-				IsDefault:  stream.IsDefault,
-				Codec:      stream.Codec,
-			})
-		}
-	}
-
 	isFav := item.UserData != nil && item.UserData.IsFavorite
 
 	return &StreamInfo{
-		ItemID:        itemID,
+		ItemID:        item.ID,
 		Name:          item.Name,
 		SeriesID:      item.SeriesID,
 		SeriesName:    item.SeriesName,
 		Type:          item.Type,
-		StreamURL:     s.client.StreamURL(itemID, ms.ID, ms.Container),
-		PosterURL:     s.client.ImageURLByID(itemID, 800),
+		StreamURL:     s.client.StreamURL(item.ID, ms.ID, ms.Container),
+		PosterURL:     s.client.ImageURLByID(item.ID, 800),
 		Container:     ms.Container,
 		Duration:      item.RunTimeTicks,
-		PositionSec:   positionSec,
-		Subtitles:     subtitles,
+		PositionSec:   s.playbackPosition(item),
+		Subtitles:     ms.Subtitles,
 		IsFavorite:    isFav,
 		MediaSourceID: ms.ID,
 	}, nil
 }
 
-// ReportPlayback reports playback progress to the server
+func (s *MediaService) playbackPosition(item MediaItem) int64 {
+	positionSec := s.store.GetPlaybackPosition(item.ID)
+	if positionSec > 0 {
+		return positionSec
+	}
+	if item.UserData == nil || item.UserData.PlaybackPositionTicks <= 0 {
+		return 0
+	}
+	return item.UserData.PlaybackPositionTicks / 10000000
+}
+
 func (s *MediaService) ReportPlayback(req PlaybackRequest) error {
 	sessionID := generateSessionID()
 
@@ -298,7 +272,6 @@ func (s *MediaService) ReportPlayback(req PlaybackRequest) error {
 	case "stop":
 		err := s.client.ReportPlaybackStopped(req.ItemID, "", sessionID, req.PositionTicks)
 		if err == nil {
-			// Save to local storage
 			durationSec := int64(0)
 			if item, e := s.client.GetItem(req.ItemID); e == nil {
 				durationSec = item.RunTimeTicks / 10000000
@@ -311,9 +284,6 @@ func (s *MediaService) ReportPlayback(req PlaybackRequest) error {
 	}
 }
 
-// ==================== Favorite Operations ====================
-
-// SetFavorite ensures the favorite state matches the requested value.
 func (s *MediaService) SetFavorite(itemID string, favorite bool) (*FavoriteResult, error) {
 	isFav, err := s.client.IsFavorite(itemID)
 	if err != nil {
@@ -338,7 +308,6 @@ func (s *MediaService) SetFavorite(itemID string, favorite bool) (*FavoriteResul
 	return &FavoriteResult{IsFavorite: finalState}, nil
 }
 
-// ToggleFavorite toggles favorite status for an item
 func (s *MediaService) ToggleFavorite(itemID string) (*FavoriteResult, error) {
 	isFav, err := s.client.IsFavorite(itemID)
 	if err != nil {
@@ -348,9 +317,6 @@ func (s *MediaService) ToggleFavorite(itemID string) (*FavoriteResult, error) {
 	return s.SetFavorite(itemID, !isFav)
 }
 
-// ==================== Server Management ====================
-
-// GetServers returns all configured servers
 func (s *MediaService) GetServers() []ServerInfo {
 	servers := s.store.GetServers()
 	activeIdx := s.store.GetActiveServerIndex()
@@ -370,7 +336,6 @@ func (s *MediaService) GetServers() []ServerInfo {
 	return result
 }
 
-// GetActiveServer returns the currently active server
 func (s *MediaService) GetActiveServer() *ServerInfo {
 	idx := s.store.GetActiveServerIndex()
 	servers := s.GetServers()
@@ -380,7 +345,6 @@ func (s *MediaService) GetActiveServer() *ServerInfo {
 	return &servers[idx]
 }
 
-// AddServer adds a new server configuration
 func (s *MediaService) AddServer(name, url, username, password string) error {
 	srv := storage.Server{
 		Name:     name,
@@ -389,7 +353,6 @@ func (s *MediaService) AddServer(name, url, username, password string) error {
 		Password: password,
 	}
 
-	// Test connection
 	client := api.New(srv.URL)
 	if err := client.Login(username, password); err != nil {
 		return fmt.Errorf("login failed: %w", err)
@@ -400,7 +363,6 @@ func (s *MediaService) AddServer(name, url, username, password string) error {
 
 	s.store.AddServer(srv)
 
-	// If first server, activate it and update service client
 	if len(s.store.GetServers()) == 1 {
 		s.store.SetActiveServer(0)
 		s.client = client
@@ -409,7 +371,6 @@ func (s *MediaService) AddServer(name, url, username, password string) error {
 	return nil
 }
 
-// UpdateServer updates an existing server
 func (s *MediaService) UpdateServer(index int, name, url, username, password string) error {
 	servers := s.store.GetServers()
 	if index < 0 || index >= len(servers) {
@@ -428,7 +389,6 @@ func (s *MediaService) UpdateServer(index int, name, url, username, password str
 	return nil
 }
 
-// DeleteServer removes a server
 func (s *MediaService) DeleteServer(index int) error {
 	servers := s.store.GetServers()
 	if index < 0 || index >= len(servers) {
@@ -439,7 +399,6 @@ func (s *MediaService) DeleteServer(index int) error {
 	return nil
 }
 
-// ActivateServer switches to a different server
 func (s *MediaService) ActivateServer(index int) error {
 	servers := s.store.GetServers()
 	if index < 0 || index >= len(servers) {
@@ -449,12 +408,10 @@ func (s *MediaService) ActivateServer(index int) error {
 	s.store.SetActiveServer(index)
 	srv := s.store.GetActiveServer()
 
-	// Update client
 	client := api.New(srv.URL)
 	client.UserID = srv.UserID
 	client.Token = srv.Token
 
-	// Verify token
 	if !client.VerifyToken() {
 		if err := client.Login(srv.Username, srv.Password); err != nil {
 			return fmt.Errorf("login failed: %w", err)
@@ -466,13 +423,11 @@ func (s *MediaService) ActivateServer(index int) error {
 	return nil
 }
 
-// PingServer tests latency for a specific server
 func (s *MediaService) PingServer(url string) int64 {
 	client := api.New(url)
 	return client.Ping().Milliseconds()
 }
 
-// GetServerStatus returns current connection status
 func (s *MediaService) GetServerStatus() *ServerStatus {
 	srv := s.store.GetActiveServer()
 	status := &ServerStatus{
@@ -493,12 +448,9 @@ func (s *MediaService) GetServerStatus() *ServerStatus {
 	return status
 }
 
-// IsMpvAvailable checks if mpv player is available
 func (s *MediaService) IsMpvAvailable() bool {
 	return player.Available()
 }
-
-// ==================== Helper Methods ====================
 
 func (s *MediaService) convertItems(items []api.MediaItem) []MediaItem {
 	result := make([]MediaItem, len(items))
@@ -516,14 +468,9 @@ func generateSessionID() string {
 	return fmt.Sprintf("ember-%d", time.Now().Unix())
 }
 
-// GetItemRaw returns the raw API item (for advanced use cases)
 func (s *MediaService) GetItemRaw(itemID string) (*api.MediaItem, error) {
 	return s.client.GetItem(itemID)
 }
-
-// ==================== MPV Playback Operations ====================
-
-// PlayWithMPV plays a single item with MPV
 func (s *MediaService) PlayWithMPV(itemID string) (*PlayResult, error) {
 	if !player.Available() {
 		return nil, fmt.Errorf("mpv player not available")
@@ -541,7 +488,6 @@ func (s *MediaService) PlayWithMPV(itemID string) (*PlayResult, error) {
 	ms := item.MediaSources[0]
 	streamURL := s.client.StreamURL(itemID, ms.ID, ms.Container)
 
-	// Build subtitle URLs
 	var subtitleURLs []string
 	for _, stream := range ms.MediaStreams {
 		if stream.Type == "Subtitle" && stream.IsExternal {
@@ -551,16 +497,13 @@ func (s *MediaService) PlayWithMPV(itemID string) (*PlayResult, error) {
 		}
 	}
 
-	// Get saved playback position
 	positionSec := s.store.GetPlaybackPosition(itemID)
 
-	// Start playback in a goroutine so it doesn't block
 	go func() {
 		result := player.Play(streamURL, item.Name, subtitleURLs, positionSec)
 		if result.Err != nil {
 			return
 		}
-		// Save playback position after MPV closes
 		durationSec := int64(0)
 		if item.RunTimeTicks > 0 {
 			durationSec = item.RunTimeTicks / 10000000
@@ -571,15 +514,12 @@ func (s *MediaService) PlayWithMPV(itemID string) (*PlayResult, error) {
 	return &PlayResult{Success: true, Message: "Playback started in MPV"}, nil
 }
 
-// GetSeriesPlaylist returns all episodes in a series for playlist playback
 func (s *MediaService) GetSeriesPlaylist(seriesID string) (*EpisodePlaylist, error) {
-	// Get series info
 	series, err := s.client.GetItem(seriesID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get series: %w", err)
 	}
 
-	// Get all seasons
 	seasons, err := s.client.GetSeasons(seriesID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get seasons: %w", err)
@@ -613,7 +553,6 @@ func (s *MediaService) GetSeriesPlaylist(seriesID string) (*EpisodePlaylist, err
 	}, nil
 }
 
-// PlaySeriesWithMPV plays a series with MPV from a specific episode
 func (s *MediaService) PlaySeriesWithMPV(seriesID, startEpisodeID string) (*PlayResult, error) {
 	if !player.Available() {
 		return nil, fmt.Errorf("mpv player not available")
@@ -628,7 +567,6 @@ func (s *MediaService) PlaySeriesWithMPV(seriesID, startEpisodeID string) (*Play
 		return nil, fmt.Errorf("no episodes found")
 	}
 
-	// Build URL list and find start index
 	var urls []string
 	startIndex := 0
 	for i, ep := range playlist.Episodes {
@@ -638,19 +576,16 @@ func (s *MediaService) PlaySeriesWithMPV(seriesID, startEpisodeID string) (*Play
 		}
 	}
 
-	// Get position for the start episode
 	positionSec := int64(0)
 	if startIndex < len(playlist.Episodes) {
 		positionSec = s.store.GetPlaybackPosition(playlist.Episodes[startIndex].ItemID)
 	}
 
-	// Start playback in a goroutine
 	go func() {
 		result := player.PlayMultiple(urls, playlist.SeriesName, nil, positionSec, startIndex)
 		if result.Err != nil {
 			return
 		}
-		// Save playback position for the last played episode
 		if startIndex < len(playlist.Episodes) {
 			s.store.UpdatePlaybackPosition(playlist.Episodes[startIndex].ItemID, result.PositionSec, 0)
 		}

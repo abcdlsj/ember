@@ -6,7 +6,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Run starts the TUI application
 func Run(svc *service.MediaService) error {
 	p := tea.NewProgram(
 		New(svc),

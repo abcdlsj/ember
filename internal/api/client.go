@@ -80,6 +80,7 @@ type ImageTags struct {
 }
 
 type MediaSource struct {
+	Protocol     string        `json:"Protocol,omitempty"`
 	ID           string        `json:"Id"`
 	Container    string        `json:"Container"`
 	MediaStreams []MediaStream `json:"MediaStreams,omitempty"`
@@ -116,7 +117,7 @@ type SearchOptions struct {
 	Start        int
 	Limit        int
 	ItemTypes    []string
-	PlayedFilter string // "", "played", "unplayed"
+	PlayedFilter string
 	FavoriteOnly bool
 	Year         int
 }
@@ -389,9 +390,14 @@ func (c *Client) ImageURLByID(itemID string, width int) string {
 		c.Server, itemID, width, c.Token)
 }
 
-func (c *Client) SubtitleURL(itemID, sourceID string, index int) string {
-	return fmt.Sprintf("%s/emby/Videos/%s/%s/Subtitles/%d/Stream.srt?api_key=%s",
-		c.Server, itemID, sourceID, index, c.Token)
+func (c *Client) SubtitleURL(itemID, sourceID string, index int, codec string) string {
+	ext := strings.TrimSpace(codec)
+	if ext == "" {
+		ext = "srt"
+	}
+
+	return fmt.Sprintf("%s/emby/Videos/%s/%s/Subtitles/%d/Stream.%s?api_key=%s",
+		c.Server, itemID, sourceID, index, ext, c.Token)
 }
 
 func (c *Client) Ping() time.Duration {
@@ -452,7 +458,6 @@ func (c *Client) RemoveFavorite(itemID string) error {
 		return nil
 	}
 
-	// Backward compatibility for servers that only support legacy unfavorite API.
 	if !isHTTPStatusError(err, http.StatusMethodNotAllowed) &&
 		!isHTTPStatusError(err, http.StatusNotFound) {
 		return err

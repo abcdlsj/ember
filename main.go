@@ -17,20 +17,16 @@ func main() {
 		fmt.Println("Install with: brew install mpv")
 	}
 
-	// Initialize storage
 	store, err := storage.New()
 	if err != nil {
 		fmt.Printf("Error initializing storage: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Initialize API client
 	client := initClient(store)
 
-	// Create Media Service (unified business logic layer)
 	svc := service.NewMediaService(client, store)
 
-	// Run TUI
 	if err := ui.Run(svc); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)

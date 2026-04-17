@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// selectItem handles item selection
 func (m *Model) selectItem() (tea.Model, tea.Cmd) {
 	if len(m.items) == 0 || m.cursor >= len(m.items) {
 		return m, nil
@@ -28,16 +27,20 @@ func (m *Model) selectItem() (tea.Model, tea.Cmd) {
 
 	case "Series":
 		m.pushNav()
+		m.page = 0
 		m.state = StateLoading
+		m.view = viewState{mode: viewSeasons, seriesID: item.ID}
 		return m, m.loadSeasons(item.ID)
 
 	case "Season":
 		m.pushNav()
+		m.page = 0
 		m.state = StateLoading
 		seriesID := item.SeriesID
 		if seriesID == "" {
 			seriesID = item.ParentID
 		}
+		m.view = viewState{mode: viewEpisodes, seriesID: seriesID, seasonID: item.ID}
 		return m, m.loadEpisodes(seriesID, item.ID)
 
 	case "CollectionFolder", "Folder", "BoxSet":
@@ -45,15 +48,15 @@ func (m *Model) selectItem() (tea.Model, tea.Cmd) {
 		m.currentLib = &item
 		m.page = 0
 		m.state = StateLoading
+		m.view = viewState{mode: viewItems, parentID: item.ID}
 		return m, m.loadItems(item.ID, 0)
 	}
 
 	return m, nil
 }
 
-// playItem plays a media item
 func (m *Model) playItem(item service.MediaItem, fromBeginning bool) (tea.Model, tea.Cmd) {
-	streamInfo, err := m.svc.GetStreamInfo(item.ID)
+	streamInfo, err := m.svc.GetStreamInfoForItem(item)
 	if err != nil {
 		m.status = "Cannot play: " + err.Error()
 		return m, nil
@@ -64,32 +67,24 @@ func (m *Model) playItem(item service.MediaItem, fromBeginning bool) (tea.Model,
 	sessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
 	client := m.svc.Client()
 	store := m.svc.Store()
-	durationTicks := item.RunTimeTicks
+	durationTicks := streamInfo.Duration
 	startPosSec := streamInfo.PositionSec
+	subtitleURLs := buildSubtitleURLs(client, itemID, mediaSourceID, streamInfo.Subtitles)
 	if fromBeginning {
 		startPosSec = 0
 	}
 
-	// Report playback start
-	m.svc.ReportPlayback(service.PlaybackRequest{
-		Type:          "start",
-		ItemID:        itemID,
-		PositionTicks: startPosSec * 10000000,
-	})
-
 	if fromBeginning {
-		m.status = "Playing from beginning: " + item.Name
+		m.status = "Launching MPV from beginning: " + item.Name
 	} else {
-		m.status = "Playing: " + item.Name
+		m.status = "Launching MPV: " + item.Name
 	}
 
 	return m, func() tea.Msg {
-		result := player.Play(streamInfo.StreamURL, item.Name, []string{}, startPosSec)
-
-		// Save local progress
+		result := player.PlayWithHook(streamInfo.StreamURL, item.Name, subtitleURLs, startPosSec, func() {
+			_ = client.ReportPlaybackStart(itemID, mediaSourceID, sessionID, startPosSec*10_000_000)
+		})
 		store.UpdatePlaybackPosition(itemID, result.PositionSec, durationTicks/10000000)
-
-		// Report to Emby
 		err := client.ReportPlaybackStopped(itemID, mediaSourceID, sessionID, result.PositionSec*10_000_000)
 
 		return playDoneMsg{
@@ -101,7 +96,6 @@ func (m *Model) playItem(item service.MediaItem, fromBeginning bool) (tea.Model,
 	}
 }
 
-// playSeasonContinuously plays episodes continuously from current position
 func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 	seriesID := item.SeriesID
 	seasonID := item.SeasonID
@@ -120,7 +114,6 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 			return playDoneMsg{}
 		}
 
-		// Find current episode index
 		startIdx := -1
 		for i, ep := range episodes {
 			if ep.ID == item.ID {
@@ -132,7 +125,6 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 			startIdx = 0
 		}
 
-		// Build playlist
 		var urls []string
 		var currentItem *service.MediaItem
 		var currentItemID string
@@ -159,16 +151,8 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 			return playDoneMsg{}
 		}
 
-		// Calculate start position
-		var startPosSec int64
-		if currentItem != nil {
-			currentFull, _ := m.svc.Client().GetItem(currentItemID)
-			if currentFull.UserData != nil && currentFull.UserData.PlaybackPositionTicks > 0 {
-				startPosSec = currentFull.UserData.PlaybackPositionTicks / 10000000
-			}
-			if startPosSec == 0 {
-				startPosSec = m.svc.Store().GetPlaybackPosition(currentItemID)
-			}
+		if currentItem == nil {
+			return playDoneMsg{}
 		}
 
 		title := item.SeriesName
@@ -176,40 +160,33 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 			title = item.Name
 		}
 
-		playSessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
-
-		// Report playback start
-		if currentItemID != "" {
-			currentFull, _ := m.svc.Client().GetItem(currentItemID)
-			if len(currentFull.MediaSources) > 0 {
-				m.svc.Client().ReportPlaybackStart(currentItemID, currentFull.MediaSources[0].ID, playSessionID, startPosSec*10000000)
-			}
+		streamInfo, err := m.svc.GetStreamInfoForItem(*currentItem)
+		if err != nil {
+			return playDoneMsg{}
 		}
 
-		// Play with mpv
-		result := player.PlayMultiple(urls, title, []string{}, startPosSec, startIdx)
+		startPosSec := streamInfo.PositionSec
+		playSessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
+		result := player.PlayMultipleWithHook(urls, title, nil, startPosSec, startIdx, func() {
+			_ = m.svc.Client().ReportPlaybackStart(currentItemID, streamInfo.MediaSourceID, playSessionID, startPosSec*10_000_000)
+		})
 
-		// Save progress
-		var durationTicks int64
+		durationTicks := currentItem.RunTimeTicks
+		reportOK := result.Err == nil
 		if currentItemID != "" && result.PositionSec > 0 {
-			currentFull, _ := m.svc.Client().GetItem(currentItemID)
-			if currentFull != nil {
-				durationTicks = currentFull.RunTimeTicks
-			}
 			m.svc.Store().UpdatePlaybackPosition(currentItemID, result.PositionSec, durationTicks/10000000)
-			m.svc.Client().ReportPlaybackStopped(currentItemID, "", playSessionID, result.PositionSec*10000000)
+			reportOK = m.svc.Client().ReportPlaybackStopped(currentItemID, streamInfo.MediaSourceID, playSessionID, result.PositionSec*10_000_000) == nil && reportOK
 		}
 
 		return playDoneMsg{
 			itemID:        currentItemID,
 			positionSec:   result.PositionSec,
 			durationTicks: durationTicks,
-			reportOK:      result.Err == nil,
+			reportOK:      reportOK,
 		}
 	}
 }
 
-// goBack navigates back
 func (m *Model) goBack() (tea.Model, tea.Cmd) {
 	if len(m.navStack) == 0 {
 		return m, nil
@@ -218,19 +195,20 @@ func (m *Model) goBack() (tea.Model, tea.Cmd) {
 	prev := m.navStack[len(m.navStack)-1]
 	m.navStack = m.navStack[:len(m.navStack)-1]
 	m.section = prev.Section
+	m.view = prev.View
 	m.items = prev.Items
 	m.cursor = prev.Cursor
+	m.page = prev.Page
 	m.totalItems = len(prev.Items)
 	m.status = prev.Title
+	m.currentLib = prev.CurrentLib
 
 	return m, m.loadVisibleImages()
 }
 
-// goToSeason navigates to season from episode
 func (m *Model) goToSeason(item service.MediaItem) tea.Cmd {
 	return func() tea.Msg {
 		if item.SeriesID == "" {
-			// Need to fetch full item
 			fullItem, err := m.svc.Client().GetItem(item.ID)
 			if err != nil {
 				return itemsMsg{err: fmt.Errorf("no series info")}
@@ -251,11 +229,14 @@ func (m *Model) goToSeason(item service.MediaItem) tea.Cmd {
 			return itemsMsg{err: err}
 		}
 
-		return itemsMsg{items: convertRawItems(items), total: len(items)}
+		return itemsMsg{
+			items: convertRawItems(items),
+			total: len(items),
+			view:  &viewState{mode: viewEpisodes, seriesID: item.SeriesID, seasonID: item.SeasonID},
+		}
 	}
 }
 
-// goToSeries navigates to series from episode or season
 func (m *Model) goToSeries(item service.MediaItem) tea.Cmd {
 	return func() tea.Msg {
 		seriesID := item.SeriesID
@@ -264,7 +245,6 @@ func (m *Model) goToSeries(item service.MediaItem) tea.Cmd {
 		}
 
 		if seriesID == "" {
-			// Need to fetch full item
 			fullItem, err := m.svc.Client().GetItem(item.ID)
 			if err != nil {
 				return itemsMsg{err: fmt.Errorf("no series info")}
@@ -284,33 +264,31 @@ func (m *Model) goToSeries(item service.MediaItem) tea.Cmd {
 			return itemsMsg{err: err}
 		}
 
-		return itemsMsg{items: convertRawItems(items), total: len(items)}
+		return itemsMsg{
+			items: convertRawItems(items),
+			total: len(items),
+			view:  &viewState{mode: viewSeasons, seriesID: seriesID},
+		}
 	}
 }
 
-// pushNav saves current state to navigation stack
 func (m *Model) pushNav() {
 	m.navStack = append(m.navStack, NavState{
-		Section: m.section,
-		Items:   m.items,
-		Cursor:  m.cursor,
-		Title:   m.status,
+		Section:    m.section,
+		View:       m.view,
+		Items:      m.items,
+		Cursor:     m.cursor,
+		Page:       m.page,
+		Title:      m.status,
+		CurrentLib: m.currentLib,
 	})
 }
 
-// currentParentID returns the current parent ID for pagination
-func (m *Model) currentParentID() string {
-	if m.currentLib != nil {
-		return m.currentLib.ID
-	}
-	return ""
-}
-
-// resetForServerSwitch resets state when switching servers
 func (m *Model) resetForServerSwitch(samePrefix bool) {
 	m.status = "Connected"
 	m.state = StateLoading
 	m.section = SectionResume
+	m.view = viewState{mode: viewResume}
 	m.navStack = nil
 	m.currentLib = nil
 	m.page = 0
@@ -325,16 +303,13 @@ func (m *Model) resetForServerSwitch(samePrefix bool) {
 	}
 }
 
-// syncItemState updates item state across all locations
 func (m *Model) syncItemState(itemID string, updater func(*service.MediaItem)) {
-	// Update current items
 	for i := range m.items {
 		if m.items[i].ID == itemID {
 			updater(&m.items[i])
 		}
 	}
 
-	// Update sectionCache
 	for sec := range m.sectionCache {
 		for i := range m.sectionCache[sec] {
 			if m.sectionCache[sec][i].ID == itemID {
@@ -343,7 +318,6 @@ func (m *Model) syncItemState(itemID string, updater func(*service.MediaItem)) {
 		}
 	}
 
-	// Update navStack
 	for i := range m.navStack {
 		for j := range m.navStack[i].Items {
 			if m.navStack[i].Items[j].ID == itemID {
@@ -353,46 +327,49 @@ func (m *Model) syncItemState(itemID string, updater func(*service.MediaItem)) {
 	}
 }
 
-// refreshCurrentView reloads the current view
 func (m *Model) refreshCurrentView() (tea.Model, tea.Cmd) {
 	m.state = StateLoading
+	m.keepCursor = true
 	if m.section == SectionResume || m.section == SectionFavorites {
 		delete(m.sectionCache, m.section)
 	}
 
-	switch m.section {
-	case SectionResume:
-		return m, m.loadResume()
+	return m, m.loadActiveView()
+}
 
-	case SectionFavorites:
-		return m, m.loadFavorites()
+func (m *Model) loadActiveView() tea.Cmd {
+	switch m.view.mode {
+	case viewResume:
+		return m.loadResume()
 
-	case SectionHistory:
-		return m, m.loadHistory(m.page)
+	case viewFavorites:
+		return m.loadFavorites()
 
-	case SectionSearch:
+	case viewHistory:
+		return m.loadHistory(m.page)
+
+	case viewSearch:
 		if m.hasSearchCriteria() {
-			return m, m.searchItems()
+			return m.searchItems()
 		}
-		return m, nil
+		return nil
 
-	default:
-		return m, m.loadItems(m.currentParentID(), m.page)
+	case viewSeasons:
+		return m.loadSeasons(m.view.seriesID)
+
+	case viewEpisodes:
+		return m.loadEpisodes(m.view.seriesID, m.view.seasonID)
+
+	case viewItems:
+		return m.loadItems(m.view.parentID, m.page)
 	}
+	return m.loadResume()
 }
 
 func (m *Model) loadCurrentPagedSection() tea.Cmd {
-	switch m.section {
-	case SectionHistory:
-		return m.loadHistory(m.page)
-	case SectionSearch:
-		return m.searchItems()
-	default:
-		return m.loadItems(m.currentParentID(), m.page)
-	}
+	return m.loadActiveView()
 }
 
-// switchSection switches to a different section
 func (m *Model) switchSection(target Section, loader func() tea.Cmd) (tea.Model, tea.Cmd) {
 	m.sectionCursor[m.section] = m.cursor
 
@@ -400,6 +377,17 @@ func (m *Model) switchSection(target Section, loader func() tea.Cmd) (tea.Model,
 	m.page = 0
 	m.navStack = nil
 	m.currentLib = nil
+	m.keepCursor = false
+	switch target {
+	case SectionResume:
+		m.view = viewState{mode: viewResume}
+	case SectionFavorites:
+		m.view = viewState{mode: viewFavorites}
+	case SectionHistory:
+		m.view = viewState{mode: viewHistory}
+	case SectionSearch:
+		m.view = viewState{mode: viewSearch}
+	}
 
 	if (target == SectionResume || target == SectionFavorites) && len(m.navStack) == 0 {
 		if cached, ok := m.sectionCache[target]; ok && len(cached) > 0 {
@@ -416,7 +404,6 @@ func (m *Model) switchSection(target Section, loader func() tea.Cmd) (tea.Model,
 	return m, loader()
 }
 
-// pingServers pings all servers with same prefix
 func (m *Model) pingServers() tea.Cmd {
 	return func() tea.Msg {
 		srv := m.svc.GetActiveServer()
@@ -457,7 +444,6 @@ func (m *Model) pingServers() tea.Cmd {
 	}
 }
 
-// Helper functions
 func convertRawItems(items []api.MediaItem) []service.MediaItem {
 	result := make([]service.MediaItem, len(items))
 	for i, item := range items {
@@ -467,7 +453,46 @@ func convertRawItems(items []api.MediaItem) []service.MediaItem {
 }
 
 func convertRawToService(item api.MediaItem) service.MediaItem {
-	// This is a simplified conversion - in real usage, service methods handle this
+	var userData *service.UserData
+	if item.UserData != nil {
+		pct := 0
+		if item.RunTimeTicks > 0 && item.UserData.PlaybackPositionTicks > 0 {
+			pct = int(float64(item.UserData.PlaybackPositionTicks) / float64(item.RunTimeTicks) * 100)
+		}
+		userData = &service.UserData{
+			PlaybackPositionTicks: item.UserData.PlaybackPositionTicks,
+			Played:                item.UserData.Played,
+			IsFavorite:            item.UserData.IsFavorite,
+			LastPlayedDate:        item.UserData.LastPlayedDate,
+			PlaybackPositionPct:   pct,
+		}
+	}
+
+	mediaSources := make([]service.MediaSource, 0, len(item.MediaSources))
+	for _, source := range item.MediaSources {
+		subtitles := make([]service.SubtitleInfo, 0, len(source.MediaStreams))
+		for _, stream := range source.MediaStreams {
+			if stream.Type != "Subtitle" {
+				continue
+			}
+			subtitles = append(subtitles, service.SubtitleInfo{
+				Index:      stream.Index,
+				Language:   stream.Language,
+				Title:      stream.Title,
+				IsExternal: stream.IsExternal,
+				IsDefault:  stream.IsDefault,
+				Codec:      stream.Codec,
+			})
+		}
+
+		mediaSources = append(mediaSources, service.MediaSource{
+			ID:        source.ID,
+			Container: source.Container,
+			Protocol:  source.Protocol,
+			Subtitles: subtitles,
+		})
+	}
+
 	return service.MediaItem{
 		ID:           item.ID,
 		Name:         item.Name,
@@ -481,7 +506,20 @@ func convertRawToService(item api.MediaItem) service.MediaItem {
 		IndexNumber:  item.IndexNumber,
 		Overview:     item.Overview,
 		RunTimeTicks: item.RunTimeTicks,
+		UserData:     userData,
+		MediaSources: mediaSources,
 		Playable:     item.Type == "Movie" || item.Type == "Episode" || item.Type == "Video",
 		Browsable:    item.Type == "Series" || item.Type == "Season" || item.Type == "CollectionFolder" || item.Type == "Folder" || item.Type == "BoxSet",
 	}
+}
+
+func buildSubtitleURLs(client *api.Client, itemID, sourceID string, subtitles []service.SubtitleInfo) []string {
+	urls := make([]string, 0, len(subtitles))
+	for _, subtitle := range subtitles {
+		if !subtitle.IsExternal {
+			continue
+		}
+		urls = append(urls, client.SubtitleURL(itemID, sourceID, subtitle.Index, subtitle.Codec))
+	}
+	return urls
 }

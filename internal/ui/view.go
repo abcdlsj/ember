@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// View renders the UI
 func (m *Model) View() string {
 	if m.width == 0 {
 		return "Loading..."
@@ -180,7 +179,7 @@ func (m *Model) renderSearch() string {
 
 	queryLine := lipgloss.JoinHorizontal(lipgloss.Left, inputLabelStyle.Render("Query:")+" ", m.searchInput.View())
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
-		"[c] clear  [Enter] search  [Esc] cancel",
+		"[Enter] search  [Esc] cancel",
 	)
 	return lipgloss.JoinVertical(lipgloss.Left, title, queryLine, labelStyle.Render("Search by title or keyword."), hint)
 }
