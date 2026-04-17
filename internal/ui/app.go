@@ -86,6 +86,7 @@ type Model struct {
 	lastPlayPosition int64
 	lastReportOK     bool
 	loggingEnabled   bool
+	helpVisible      bool
 
 	serverCursor     int
 	serverInputs     []textinput.Model
@@ -145,6 +146,7 @@ type playDoneMsg struct {
 	positionSec   int64
 	durationTicks int64
 	reportOK      bool
+	err           error
 }
 
 func New(svc *service.MediaService) *Model {
@@ -375,11 +377,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadVisibleImages()
 
 	case tea.KeyMsg:
+		if m.helpVisible {
+			if msg.String() == "?" || msg.String() == "esc" {
+				m.helpVisible = false
+			}
+			return m, nil
+		}
+		if m.state != StateSearching && msg.String() == "?" {
+			m.helpVisible = true
+			return m, nil
+		}
 		return m.handleKey(msg)
 
 	case itemsMsg:
 		if msg.err != nil {
-			m.status = "Error: " + msg.err.Error()
+			m.state = StateBrowsing
+			m.keepCursor = false
+			m.status = m.loadErrorText(msg.err)
 		} else {
 			if msg.view != nil {
 				m.view = *msg.view
@@ -396,7 +410,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.keepCursor = false
 			m.state = StateBrowsing
-			m.status = fmt.Sprintf("%d items", msg.total)
+			m.status = m.loadedItemsText(msg.total)
 			if m.section == SectionResume || m.section == SectionFavorites {
 				m.sectionCache[m.section] = msg.items
 				m.sectionCursor[m.section] = m.cursor
@@ -428,7 +442,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case playDoneMsg:
 		m.lastPlayPosition = msg.positionSec
 		m.lastReportOK = msg.reportOK
-		m.status = "Playback finished"
+		if msg.err != nil {
+			m.status = "Playback failed: " + msg.err.Error()
+		} else if msg.positionSec > 0 {
+			m.status = "Saved progress at " + formatDuration(msg.positionSec)
+		} else {
+			m.status = "Playback finished"
+		}
 		if msg.itemID != "" {
 			m.syncItemState(msg.itemID, func(item *service.MediaItem) {
 				if item.UserData == nil {
@@ -501,7 +521,10 @@ func (m *Model) loadVisibleImages() tea.Cmd {
 	}
 	contentWidth := m.width - statusWidth
 	coverWidth := contentWidth - 4
-	coverHeight := m.height - 6
+	coverHeight := m.height - 11
+	if coverHeight < 8 {
+		coverHeight = m.height - 8
+	}
 	if coverWidth <= 0 || coverHeight <= 0 {
 		return nil
 	}
@@ -592,6 +615,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "4", "/":
 		m.state = StateSearching
+		m.searchInput.SetValue(m.lastSearchQuery)
 		return m, tea.Batch(m.searchInput.Focus(), textinput.Blink)
 
 	case "f":

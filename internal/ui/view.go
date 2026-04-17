@@ -32,6 +32,10 @@ func (m *Model) renderCarousel(width, height int) string {
 		Width(width).
 		Height(height)
 
+	if m.helpVisible {
+		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderHelp(width - 6))
+	}
+
 	if m.state == StateServerManage {
 		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderServerManage())
 	}
@@ -49,11 +53,19 @@ func (m *Model) renderCarousel(width, height int) string {
 	}
 
 	if len(m.items) == 0 {
-		return style.Align(lipgloss.Center, lipgloss.Center).Render("No items")
+		parts := []string{lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(m.emptyStateText())}
+		if header := m.renderContentHeader(width); header != "" {
+			parts = append([]string{header}, parts...)
+		}
+		empty := lipgloss.JoinVertical(lipgloss.Left, parts...)
+		return style.Align(lipgloss.Center, lipgloss.Center).Render(empty)
 	}
 
-	coverHeight := height - 6
+	coverHeight := height - 11
 	coverWidth := width - 4
+	if coverHeight < 8 {
+		coverHeight = height - 8
+	}
 
 	var cover string
 	if m.cursor < 0 || m.cursor >= len(m.items) {
@@ -72,9 +84,13 @@ func (m *Model) renderCarousel(width, height int) string {
 		Foreground(lipgloss.Color("244")).
 		Align(lipgloss.Center).
 		Width(width).
-		Render(fmt.Sprintf("< %d / %d >  Page %d", m.cursor+1, len(m.items), m.page+1))
+		Render(fmt.Sprintf("< %d / %d >  Page %d  Total %d", m.cursor+1, len(m.items), m.page+1, m.totalItems))
 
-	content := lipgloss.JoinVertical(lipgloss.Center, cover, info, nav)
+	parts := []string{cover, info, nav}
+	if header := m.renderContentHeader(width); header != "" {
+		parts = append([]string{header}, parts...)
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return style.Align(lipgloss.Center, lipgloss.Bottom).Render(content)
 }
 
@@ -146,8 +162,13 @@ func (m *Model) renderItemInfo(item service.MediaItem, width int) string {
 		Width(width).
 		Align(lipgloss.Center)
 
-	subtitleStyle := lipgloss.NewStyle().
+	lineStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("244")).
+		Width(width).
+		Align(lipgloss.Center)
+
+	accentStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("117")).
 		Width(width).
 		Align(lipgloss.Center)
 
@@ -159,17 +180,18 @@ func (m *Model) renderItemInfo(item service.MediaItem, width int) string {
 		title = fmt.Sprintf("EP %02d - %s", item.IndexNumber, item.Name)
 	}
 
-	fav := ""
-	if item.UserData != nil && item.UserData.IsFavorite {
-		fav = " [FAV]"
+	lines := []string{titleStyle.Render(title)}
+
+	if context := itemContext(item); context != "" {
+		lines = append(lines, accentStyle.Render(context))
 	}
 
-	subtitle := item.Type + fav
+	meta := strings.Join(itemMeta(item), "  ")
+	if meta != "" {
+		lines = append(lines, lineStyle.Render(meta))
+	}
 
-	return lipgloss.JoinVertical(lipgloss.Center,
-		titleStyle.Render(title),
-		subtitleStyle.Render(subtitle),
-	)
+	return lipgloss.JoinVertical(lipgloss.Center, lines...)
 }
 
 func (m *Model) renderSearch() string {
@@ -178,10 +200,14 @@ func (m *Model) renderSearch() string {
 	inputLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 
 	queryLine := lipgloss.JoinHorizontal(lipgloss.Left, inputLabelStyle.Render("Query:")+" ", m.searchInput.View())
+	current := "Current query: none"
+	if strings.TrimSpace(m.lastSearchQuery) != "" {
+		current = `Current query: "` + m.lastSearchQuery + `"`
+	}
 	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
 		"[Enter] search  [Esc] cancel",
 	)
-	return lipgloss.JoinVertical(lipgloss.Left, title, queryLine, labelStyle.Render("Search by title or keyword."), hint)
+	return lipgloss.JoinVertical(lipgloss.Left, title, queryLine, labelStyle.Render(current), labelStyle.Render("Search by title or keyword."), hint)
 }
 
 func (m *Model) renderServerManage() string {
@@ -356,8 +382,19 @@ func (m *Model) renderStatus(width, height int) string {
 		dimStyle.Render(m.status),
 	)
 
+	if path := m.currentBreadcrumb(); path != "" {
+		lines = append(lines, dimStyle.Render(" Path:")+highlightStyle.Render(" "+truncateText(path, width-11)))
+	}
+
 	if m.cursor < len(m.items) {
 		curItem := m.items[m.cursor]
+		lines = append(lines, "", divider)
+		lines = append(lines, highlightStyle.Render("Current:"))
+		lines = append(lines, dimStyle.Render(curItem.Name))
+		meta := strings.Join(itemMeta(curItem), " · ")
+		if meta != "" {
+			lines = append(lines, dimStyle.Render(truncateText(meta, width-4)))
+		}
 		if detail, ok := m.detailCache[curItem.ID]; ok && len(detail.Subtitles) > 0 {
 			var subs []string
 			for _, sub := range detail.Subtitles {
@@ -371,7 +408,6 @@ func (m *Model) renderStatus(width, height int) string {
 				}
 				subs = append(subs, lang+ext)
 			}
-			lines = append(lines, "", divider)
 			lines = append(lines, highlightStyle.Render("Subtitles:"))
 			subLine := strings.Join(subs, " ")
 			if len(subLine) > width-4 {
@@ -392,41 +428,218 @@ func (m *Model) renderStatus(width, height int) string {
 		lines = append(lines, dimStyle.Render("Report: ")+reportStatus)
 	}
 
-	if m.cursor < len(m.items) {
-		curItem := m.items[m.cursor]
-		if curItem.Type == "Episode" && curItem.SeriesName != "" {
-			lines = append(lines, "", divider)
-			lines = append(lines, highlightStyle.Render("Series:"))
-			lines = append(lines, dimStyle.Render(curItem.SeriesName))
-			if curItem.SeasonName != "" {
-				lines = append(lines, dimStyle.Render(curItem.SeasonName))
-			}
-		}
-	}
-
 	lines = append(lines,
 		"",
 		divider,
-		dimStyle.Render("Keys:"),
-		dimStyle.Render(" ←→  move"),
-		dimStyle.Render(" ↵   select"),
+		dimStyle.Render("Actions:"),
+		dimStyle.Render(" ↵   open"),
 		dimStyle.Render(" p   play"),
-		dimStyle.Render(" R   replay"),
-		dimStyle.Render(" esc back"),
-		dimStyle.Render(" f   fav"),
-		dimStyle.Render(" a/u fav set"),
-		dimStyle.Render(" s   season"),
-		dimStyle.Render(" S   series"),
-		dimStyle.Render(" c   continuous"),
-		dimStyle.Render(" d   debug"),
 		dimStyle.Render(" r   refresh"),
-		dimStyle.Render(" 3   history"),
 		dimStyle.Render(" 4,/ search"),
-		dimStyle.Render(" m   servers"),
+		dimStyle.Render(" ?   help"),
 		dimStyle.Render(" q   quit"),
 	)
 
 	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m *Model) renderContentHeader(width int) string {
+	path := m.currentBreadcrumb()
+	if path == "" {
+		return ""
+	}
+	breadcrumb := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("244")).
+		Width(width).
+		Render(path)
+
+	return breadcrumb
+}
+
+func (m *Model) renderHelp(width int) string {
+	style := lipgloss.NewStyle().
+		Width(width).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("99")).
+		Padding(1, 2)
+
+	lines := []string{
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117")).Render("Help"),
+		"",
+		"Navigation",
+		"  1/2/3 switch sections",
+		"  4 or / open search",
+		"  left/right move or change page",
+		"  enter open item",
+		"  esc/backspace go back",
+		"",
+		"Playback",
+		"  p play current item",
+		"  R replay from beginning",
+		"  c continuous play for episode",
+		"",
+		"Actions",
+		"  f toggle favorite",
+		"  a add favorite",
+		"  u remove favorite",
+		"  s jump to season",
+		"  S jump to series",
+		"  r refresh current view",
+		"  m manage servers",
+		"  d toggle debug log",
+		"",
+		"Press ? or Esc to close",
+	}
+
+	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m *Model) currentBreadcrumb() string {
+	if m.state == StateSearching {
+		if strings.TrimSpace(m.lastSearchQuery) == "" {
+			return ""
+		}
+		return `Search / "` + m.lastSearchQuery + `"`
+	}
+	parts := make([]string, 0, 2)
+	switch m.view.mode {
+	case viewSearch:
+		if strings.TrimSpace(m.lastSearchQuery) != "" {
+			parts = append(parts, "Search", `"`+m.lastSearchQuery+`"`)
+		}
+	case viewItems:
+		if m.currentLib != nil && strings.TrimSpace(m.currentLib.Name) != "" {
+			parts = append(parts, m.currentLib.Name)
+		}
+	case viewSeasons:
+		if len(m.items) > 0 && strings.TrimSpace(m.items[0].SeriesName) != "" {
+			parts = append(parts, m.items[0].SeriesName)
+		}
+	case viewEpisodes:
+		if len(m.items) > 0 {
+			if strings.TrimSpace(m.items[0].SeriesName) != "" {
+				parts = append(parts, m.items[0].SeriesName)
+			}
+			if strings.TrimSpace(m.items[0].SeasonName) != "" {
+				parts = append(parts, m.items[0].SeasonName)
+			}
+		}
+	}
+	return strings.Join(parts, " / ")
+}
+
+func itemContext(item service.MediaItem) string {
+	if item.Type == "Episode" {
+		parts := make([]string, 0, 2)
+		if strings.TrimSpace(item.SeriesName) != "" {
+			parts = append(parts, item.SeriesName)
+		}
+		if strings.TrimSpace(item.SeasonName) != "" {
+			parts = append(parts, item.SeasonName)
+		}
+		return strings.Join(parts, " / ")
+	}
+	if item.Type == "Season" && strings.TrimSpace(item.SeriesName) != "" {
+		return item.SeriesName
+	}
+	return ""
+}
+
+func itemMeta(item service.MediaItem) []string {
+	parts := []string{item.Type}
+	if item.Year > 0 {
+		parts = append(parts, fmt.Sprintf("%d", item.Year))
+	}
+	if item.RunTimeTicks > 0 {
+		parts = append(parts, formatDuration(item.RunTimeTicks/10000000))
+	}
+	if item.UserData != nil {
+		switch {
+		case item.UserData.Played:
+			parts = append(parts, "Played")
+		case item.UserData.PlaybackPositionPct > 0:
+			parts = append(parts, fmt.Sprintf("%d%% watched", item.UserData.PlaybackPositionPct))
+		}
+		if item.UserData.IsFavorite {
+			parts = append(parts, "Favorite")
+		}
+	}
+	return parts
+}
+
+func truncateText(text string, max int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || max <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	if max <= 1 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-1]) + "…"
+}
+
+func (m *Model) emptyStateText() string {
+	switch m.view.mode {
+	case viewResume:
+		return "Nothing to continue"
+	case viewFavorites:
+		return "No favorites yet"
+	case viewHistory:
+		return "No watch history"
+	case viewSearch:
+		if strings.TrimSpace(m.lastSearchQuery) == "" {
+			return "Enter a keyword to search"
+		}
+		return `No results for "` + m.lastSearchQuery + `"`
+	case viewItems:
+		return "Library is empty"
+	case viewSeasons:
+		return "No seasons"
+	case viewEpisodes:
+		return "No episodes"
+	default:
+		return "Nothing here"
+	}
+}
+
+func (m *Model) loadErrorText(err error) string {
+	switch m.view.mode {
+	case viewSearch:
+		return "Search failed: " + err.Error()
+	case viewResume:
+		return "Failed to load continue list: " + err.Error()
+	case viewFavorites:
+		return "Failed to load favorites: " + err.Error()
+	case viewHistory:
+		return "Failed to load history: " + err.Error()
+	case viewItems:
+		return "Failed to load library: " + err.Error()
+	case viewSeasons:
+		return "Failed to load seasons: " + err.Error()
+	case viewEpisodes:
+		return "Failed to load episodes: " + err.Error()
+	default:
+		return "Load failed: " + err.Error()
+	}
+}
+
+func (m *Model) loadedItemsText(total int) string {
+	switch m.view.mode {
+	case viewSearch:
+		return fmt.Sprintf("%d results", total)
+	case viewResume:
+		return fmt.Sprintf("%d in continue list", total)
+	case viewFavorites:
+		return fmt.Sprintf("%d favorites", total)
+	case viewHistory:
+		return fmt.Sprintf("%d history items", total)
+	default:
+		return fmt.Sprintf("%d items", total)
+	}
 }
 
 func formatDuration(sec int64) string {

@@ -92,6 +92,7 @@ func (m *Model) playItem(item service.MediaItem, fromBeginning bool) (tea.Model,
 			positionSec:   result.PositionSec,
 			durationTicks: durationTicks,
 			reportOK:      err == nil,
+			err:           result.Err,
 		}
 	}
 }
@@ -183,6 +184,7 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 			positionSec:   result.PositionSec,
 			durationTicks: durationTicks,
 			reportOK:      reportOK,
+			err:           result.Err,
 		}
 	}
 }
