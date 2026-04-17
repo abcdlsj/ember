@@ -288,8 +288,13 @@ func (m *Model) loadFavorites() tea.Cmd {
 }
 
 func (m *Model) toggleFavorite(item service.MediaItem) tea.Cmd {
+	target := true
+	if item.UserData != nil {
+		target = !item.UserData.IsFavorite
+	}
+
 	return func() tea.Msg {
-		result, err := m.svc.ToggleFavorite(item.ID)
+		result, err := m.svc.SetFavorite(item.ID, target)
 		if err != nil {
 			return favoriteMsg{itemID: item.ID, err: err}
 		}
@@ -375,7 +380,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.keepCursor = false
 			m.state = StateBrowsing
-			m.status = m.loadedItemsText(msg.total)
+			m.status = ""
 			if m.section == SectionResume || m.section == SectionFavorites {
 				m.sectionCache[m.section] = msg.items
 				m.sectionCursor[m.section] = m.cursor
@@ -429,6 +434,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Favorite error: " + msg.err.Error()
 			return m, nil
 		}
+		delete(m.sectionCache, SectionFavorites)
 		m.syncItemState(msg.itemID, func(item *service.MediaItem) {
 			if item.UserData == nil {
 				item.UserData = &service.UserData{}
@@ -440,7 +446,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "Removed from favorites"
 		}
-		if m.section == SectionFavorites && !msg.isFav {
+		if m.section == SectionFavorites {
 			return m.refreshCurrentView()
 		}
 		return m, nil

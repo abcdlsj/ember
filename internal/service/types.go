@@ -253,8 +253,14 @@ func buildImageCandidateURLs(item api.MediaItem, imageBaseURL, token string, wid
 		urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.ID, "Thumb", width, token))
 	}
 	if isEpisode {
+		if item.ParentThumbItemID != "" && item.ParentThumbImageTag != "" {
+			urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.ParentThumbItemID, "Thumb", width, token))
+		}
 		if len(item.BackdropImageTags) > 0 {
 			urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.ID, "Backdrop", width, token))
+		}
+		if item.ParentBackdropItemID != "" && len(item.ParentBackdropTags) > 0 {
+			urls = appendUniqueImageURL(urls, buildImageURL(imageBaseURL, item.ParentBackdropItemID, "Backdrop", width, token))
 		}
 		return urls
 	}
@@ -280,6 +286,9 @@ func buildImageCandidateURLs(item api.MediaItem, imageBaseURL, token string, wid
 func buildBackdropURL(item api.MediaItem, imageBaseURL, token string) string {
 	if len(item.BackdropImageTags) > 0 {
 		return buildImageURL(imageBaseURL, item.ID, "Backdrop", 800, token)
+	}
+	if item.Type == "Episode" && item.ParentBackdropItemID != "" && len(item.ParentBackdropTags) > 0 {
+		return buildImageURL(imageBaseURL, item.ParentBackdropItemID, "Backdrop", 800, token)
 	}
 	if item.SeriesID != "" {
 		return buildImageURL(imageBaseURL, item.SeriesID, "Backdrop", 800, token)

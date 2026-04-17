@@ -85,7 +85,7 @@ func (m *Model) renderCarousel(width, height int) string {
 	coverBlock := lipgloss.NewStyle().
 		Width(width).
 		Height(coverHeight).
-		Align(lipgloss.Center, lipgloss.Top).
+		Align(lipgloss.Center, lipgloss.Center).
 		Render(cover)
 
 	parts := []string{coverBlock, "", info, nav}
@@ -100,8 +100,9 @@ func (m *Model) renderCover(item service.MediaItem, width, height int, selected 
 	if img, ok := m.coverCache[item.ID]; ok && img != "" {
 		imgStyle := lipgloss.NewStyle().
 			Width(width).
+			Height(height).
 			MaxWidth(width).
-			Align(lipgloss.Center, lipgloss.Top)
+			Align(lipgloss.Center, lipgloss.Center)
 		return imgStyle.Render(img)
 	}
 
@@ -161,7 +162,18 @@ func (m *Model) renderItemInfo(item service.MediaItem, width int) string {
 		Width(width).
 		Align(lipgloss.Center)
 
-	lines := []string{titleStyle.Render(truncateText(itemPrimaryTitle(item), width-2))}
+	title := item.Name
+	if item.Year > 0 {
+		title = fmt.Sprintf("%s (%d)", item.Name, item.Year)
+	}
+	if item.IndexNumber > 0 {
+		title = fmt.Sprintf("EP %02d - %s", item.IndexNumber, item.Name)
+	}
+	if context := itemContext(item); context != "" {
+		title = title + "  /  " + context
+	}
+
+	lines := []string{titleStyle.Render(truncateText(title, width-2))}
 	meta := strings.Join(itemMeta(item), "  ")
 	lines = append(lines, lineStyle.Render(truncateText(meta, width-2)))
 
@@ -319,7 +331,7 @@ func (m *Model) renderStatus(width, height int) string {
 	var navItems []string
 	for _, s := range sections {
 		line := fmt.Sprintf(" %s  %s", s.key, s.name)
-		if m.section == s.sec {
+		if m.activeSection() == s.sec {
 			line = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Render(line)
 		} else {
 			line = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(line)
@@ -357,42 +369,14 @@ func (m *Model) renderStatus(width, height int) string {
 		dimStyle.Render(" Latency:")+latency,
 		dimStyle.Render(" MPV:")+mpvStatus,
 		dimStyle.Render(" Log:")+logStatus,
-		"",
-		dimStyle.Render(m.status),
 	)
+
+	if strings.TrimSpace(m.status) != "" {
+		lines = append(lines, "", dimStyle.Render(m.status))
+	}
 
 	if path := m.currentBreadcrumb(); path != "" {
 		lines = append(lines, dimStyle.Render(" Path:")+highlightStyle.Render(" "+truncateText(path, width-11)))
-	}
-
-	if m.cursor < len(m.items) {
-		curItem := m.items[m.cursor]
-		lines = append(lines, "", divider)
-		lines = append(lines, highlightStyle.Render("Current:"))
-		meta := strings.Join(itemMeta(curItem), " · ")
-		if meta != "" {
-			lines = append(lines, dimStyle.Render(truncateText(meta, width-4)))
-		}
-		if detail, ok := m.detailCache[curItem.ID]; ok && len(detail.Subtitles) > 0 {
-			var subs []string
-			for _, sub := range detail.Subtitles {
-				lang := sub.Language
-				if lang == "" {
-					lang = "?"
-				}
-				ext := ""
-				if sub.IsExternal {
-					ext = "*"
-				}
-				subs = append(subs, lang+ext)
-			}
-			lines = append(lines, highlightStyle.Render("Subtitles:"))
-			subLine := strings.Join(subs, " ")
-			if len(subLine) > width-4 {
-				subLine = subLine[:width-4]
-			}
-			lines = append(lines, dimStyle.Render(subLine))
-		}
 	}
 
 	if m.lastPlayPosition > 0 {
@@ -467,6 +451,13 @@ func (m *Model) renderHelp(width int) string {
 	return style.Render(strings.Join(lines, "\n"))
 }
 
+func (m *Model) activeSection() Section {
+	if m.state == StateSearching {
+		return SectionSearch
+	}
+	return m.section
+}
+
 func (m *Model) currentBreadcrumb() string {
 	if m.state == StateSearching {
 		if strings.TrimSpace(m.lastSearchQuery) == "" {
@@ -501,23 +492,21 @@ func (m *Model) currentBreadcrumb() string {
 	return strings.Join(parts, " / ")
 }
 
-func itemPrimaryTitle(item service.MediaItem) string {
-	if name := strings.TrimSpace(item.Name); name != "" {
-		return name
+func itemContext(item service.MediaItem) string {
+	if item.Type == "Episode" {
+		parts := make([]string, 0, 2)
+		if strings.TrimSpace(item.SeriesName) != "" {
+			parts = append(parts, item.SeriesName)
+		}
+		if strings.TrimSpace(item.SeasonName) != "" {
+			parts = append(parts, item.SeasonName)
+		}
+		return strings.Join(parts, " / ")
 	}
-	if item.Type == "Episode" && item.IndexNumber > 0 {
-		return fmt.Sprintf("EP %02d", item.IndexNumber)
-	}
-	if item.SeasonName != "" {
-		return item.SeasonName
-	}
-	if item.SeriesName != "" {
+	if item.Type == "Season" && strings.TrimSpace(item.SeriesName) != "" {
 		return item.SeriesName
 	}
-	if item.Type != "" {
-		return item.Type
-	}
-	return "Unknown"
+	return ""
 }
 
 func itemMeta(item service.MediaItem) []string {
@@ -599,21 +588,6 @@ func (m *Model) loadErrorText(err error) string {
 		return "Failed to load episodes: " + err.Error()
 	default:
 		return "Load failed: " + err.Error()
-	}
-}
-
-func (m *Model) loadedItemsText(total int) string {
-	switch m.view.mode {
-	case viewSearch:
-		return fmt.Sprintf("%d results", total)
-	case viewResume:
-		return fmt.Sprintf("%d in continue list", total)
-	case viewFavorites:
-		return fmt.Sprintf("%d favorites", total)
-	case viewHistory:
-		return fmt.Sprintf("%d history items", total)
-	default:
-		return fmt.Sprintf("%d items", total)
 	}
 }
 

@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -305,7 +304,7 @@ func (m *Model) switchSection(target Section, loader func() tea.Cmd) (tea.Model,
 			m.totalItems = len(cached)
 			m.cursor = m.sectionCursor[target]
 			m.state = StateBrowsing
-			m.status = fmt.Sprintf("%d items", len(cached))
+			m.status = ""
 			return m, m.loadVisibleImages()
 		}
 	}

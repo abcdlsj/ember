@@ -289,20 +289,21 @@ func (s *MediaService) ReportPlayback(req PlaybackRequest) error {
 }
 
 func (s *MediaService) SetFavorite(itemID string, favorite bool) (*FavoriteResult, error) {
-	isFav, err := s.client.IsFavorite(itemID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get favorite status: %w", err)
+	var err error
+	if favorite {
+		err = s.client.AddFavorite(itemID)
+	} else {
+		err = s.client.RemoveFavorite(itemID)
 	}
-
-	if favorite && !isFav {
-		if err = s.client.AddFavorite(itemID); err != nil {
+	if err != nil {
+		state, statusErr := s.client.IsFavorite(itemID)
+		if statusErr == nil && state == favorite {
+			return &FavoriteResult{IsFavorite: favorite}, nil
+		}
+		if favorite {
 			return nil, fmt.Errorf("failed to add favorite: %w", err)
 		}
-	}
-	if !favorite && isFav {
-		if err = s.client.RemoveFavorite(itemID); err != nil {
-			return nil, fmt.Errorf("failed to remove favorite: %w", err)
-		}
+		return nil, fmt.Errorf("failed to remove favorite: %w", err)
 	}
 
 	finalState, statusErr := s.client.IsFavorite(itemID)

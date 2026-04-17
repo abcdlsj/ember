@@ -43,6 +43,10 @@ type MediaItem struct {
 	SeasonID              string        `json:"SeasonId,omitempty"`
 	SeasonName            string        `json:"SeasonName,omitempty"`
 	ParentID              string        `json:"ParentId,omitempty"`
+	ParentThumbItemID     string        `json:"ParentThumbItemId,omitempty"`
+	ParentThumbImageTag   string        `json:"ParentThumbImageTag,omitempty"`
+	ParentBackdropItemID  string        `json:"ParentBackdropItemId,omitempty"`
+	ParentBackdropTags    []string      `json:"ParentBackdropImageTags,omitempty"`
 	IndexNumber           int           `json:"IndexNumber,omitempty"`
 	RunTimeTicks          int64         `json:"RunTimeTicks,omitempty"`
 	MediaSources          []MediaSource `json:"MediaSources,omitempty"`
