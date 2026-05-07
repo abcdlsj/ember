@@ -8,6 +8,7 @@ Ember is a terminal-first Emby client for browsing libraries and playing media f
 - Continue Watching, Favorites, and History sections
 - Keyword search
 - Favorite management from list view
+- Local playlists for grouping playable movies, episodes, and videos
 - MPV playback integration with resume support
 - Multi-server management inside the TUI
 
@@ -52,11 +53,16 @@ make install PREFIX=/usr/local
 - `2` Favorites
 - `3` History
 - `4` or `/` Search
+- `5` Playlists
 - `p` Play current item
 - `R` Replay current item from beginning
+- `P` Play current playlist from the selected item
 - `f` Toggle favorite
-- `a` Add favorite
-- `u` Remove favorite
+- `A` Add current playable item to a playlist
+- `N` New playlist
+- `E` Rename selected playlist
+- `X` Delete selected playlist
+- `D` Remove current item from playlist
 - `m` Server management
 - `q` Quit
 

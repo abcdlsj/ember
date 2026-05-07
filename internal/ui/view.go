@@ -48,6 +48,14 @@ func (m *Model) renderCarousel(width, height int) string {
 		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderSearch())
 	}
 
+	if m.state == StatePlaylistSelect {
+		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderPlaylistSelect())
+	}
+
+	if m.state == StatePlaylistEdit {
+		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderPlaylistEdit())
+	}
+
 	if m.state == StateLoading {
 		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.spinner.View() + " Loading...")
 	}
@@ -122,6 +130,7 @@ func (m *Model) renderPlaceholder(item service.MediaItem, width, height int, sel
 		"Series":           "SERIES",
 		"Season":           "SEASON",
 		"Episode":          "EP",
+		"Playlist":         "PLAYLIST",
 		"CollectionFolder": "LIBRARY",
 		"Folder":           "FOLDER",
 		"BoxSet":           "BOXSET",
@@ -199,6 +208,60 @@ func (m *Model) renderSearch() string {
 	)
 	lines = append(lines, hint)
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func (m *Model) renderPlaylistSelect() string {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render("Add to Playlist")
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	selectedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+
+	var itemName string
+	if m.pendingPlaylistItem != nil {
+		itemName = m.pendingPlaylistItem.Name
+	}
+
+	lines := []string{title}
+	if itemName != "" {
+		lines = append(lines, labelStyle.Render(truncateText(itemName, 60)))
+	}
+	lines = append(lines, "")
+
+	newPrefix := "  "
+	newStyle := labelStyle
+	if m.playlistCursor == 0 {
+		newPrefix = "> "
+		newStyle = selectedStyle
+	}
+	lines = append(lines, newStyle.Render(newPrefix+"+ New playlist..."))
+
+	for i, playlist := range m.playlistChoices {
+		cursor := i + 1
+		prefix := "  "
+		style := labelStyle
+		if cursor == m.playlistCursor {
+			prefix = "> "
+			style = selectedStyle
+		}
+		lines = append(lines, style.Render(prefix+truncateText(playlist.Name, 50)))
+	}
+
+	hint := labelStyle.MarginTop(1).Render("[Enter] choose  [N] new  [Esc] cancel")
+	lines = append(lines, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func (m *Model) renderPlaylistEdit() string {
+	title := "New Playlist"
+	if m.editingPlaylistID != "" {
+		title = "Rename Playlist"
+	}
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render(title)
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	inputLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
+
+	nameLine := lipgloss.JoinHorizontal(lipgloss.Left, inputLabelStyle.Render("Name:")+" ", m.playlistInput.View())
+	hint := labelStyle.MarginTop(1).Render("[Enter] save  [Esc] cancel")
+	return lipgloss.JoinVertical(lipgloss.Left, titleStyle, nameLine, hint)
 }
 
 func (m *Model) renderServerManage() string {
@@ -326,6 +389,7 @@ func (m *Model) renderStatus(width, height int) string {
 		{"2", "Favorites", SectionFavorites},
 		{"3", "History", SectionHistory},
 		{"4", "Search", SectionSearch},
+		{"5", "Playlists", SectionPlaylists},
 	}
 
 	var navItems []string
@@ -426,7 +490,7 @@ func (m *Model) renderHelp(width int) string {
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117")).Render("Help"),
 		"",
 		"Navigation",
-		"  1/2/3 switch sections",
+		"  1/2/3/5 switch sections",
 		"  4 or / open search",
 		"  left/right move or change page",
 		"  enter open item",
@@ -438,6 +502,12 @@ func (m *Model) renderHelp(width int) string {
 		"  c continuous play for episode",
 		"",
 		"Actions",
+		"  A add to playlist",
+		"  N new playlist",
+		"  E rename playlist",
+		"  X delete playlist",
+		"  D remove from playlist",
+		"  P play playlist",
 		"  f toggle favorite",
 		"  s jump to season",
 		"  S jump to series",
@@ -475,6 +545,15 @@ func (m *Model) currentBreadcrumb() string {
 		if m.currentLib != nil && strings.TrimSpace(m.currentLib.Name) != "" {
 			parts = append(parts, m.currentLib.Name)
 		}
+	case viewPlaylists:
+		parts = append(parts, "Playlists")
+	case viewPlaylistItems:
+		parts = append(parts, "Playlists")
+		if strings.TrimSpace(m.view.playlistName) != "" {
+			parts = append(parts, m.view.playlistName)
+		} else if name := m.svc.GetPlaylistName(m.view.playlistID); name != "" {
+			parts = append(parts, name)
+		}
 	case viewSeasons:
 		if len(m.items) > 0 && strings.TrimSpace(m.items[0].SeriesName) != "" {
 			parts = append(parts, m.items[0].SeriesName)
@@ -511,6 +590,9 @@ func itemContext(item service.MediaItem) string {
 
 func itemMeta(item service.MediaItem) []string {
 	parts := []string{item.Type}
+	if item.Type == "Playlist" && strings.TrimSpace(item.Overview) != "" {
+		parts = append(parts, item.Overview)
+	}
 	if item.Year > 0 {
 		parts = append(parts, fmt.Sprintf("%d", item.Year))
 	}
@@ -561,6 +643,10 @@ func (m *Model) emptyStateText() string {
 		return `No results for "` + m.lastSearchQuery + `"`
 	case viewItems:
 		return "Library is empty"
+	case viewPlaylists:
+		return "No playlists yet"
+	case viewPlaylistItems:
+		return "Playlist is empty"
 	case viewSeasons:
 		return "No seasons"
 	case viewEpisodes:
@@ -582,6 +668,10 @@ func (m *Model) loadErrorText(err error) string {
 		return "Failed to load history: " + err.Error()
 	case viewItems:
 		return "Failed to load library: " + err.Error()
+	case viewPlaylists:
+		return "Failed to load playlists: " + err.Error()
+	case viewPlaylistItems:
+		return "Failed to load playlist: " + err.Error()
 	case viewSeasons:
 		return "Failed to load seasons: " + err.Error()
 	case viewEpisodes:
@@ -608,7 +698,17 @@ func (m *Model) statusActions() []string {
 		} else if item.Type == "Season" {
 			actions = append(actions, " S   series")
 		}
-		actions = append(actions, " f   toggle fav")
+		if item.Type != "Playlist" {
+			actions = append(actions, " f   toggle fav")
+		}
+	}
+
+	if m.view.mode == viewPlaylists {
+		actions = append(actions, " N   new list", " E   rename", " X   delete")
+	} else if m.view.mode == viewPlaylistItems {
+		actions = append(actions, " A   add to list", " D   remove", " P   play list")
+	} else if ok && item.Playable {
+		actions = append(actions, " A   add to list")
 	}
 
 	actions = append(actions, " r   refresh", " 4,/ search", " ?   help", " q   quit")

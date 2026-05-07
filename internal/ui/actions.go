@@ -8,6 +8,7 @@ import (
 	"ember/internal/service"
 	"ember/internal/storage"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/google/uuid"
 )
@@ -20,6 +21,13 @@ func (m *Model) selectItem() (tea.Model, tea.Cmd) {
 	item := m.items[m.cursor]
 
 	switch item.Type {
+	case "Playlist":
+		m.pushNav()
+		m.page = 0
+		m.state = StateLoading
+		m.view = viewState{mode: viewPlaylistItems, playlistID: item.ID, playlistName: item.Name}
+		return m, m.loadPlaylistItems(item.ID)
+
 	case "Movie", "Episode", "Video":
 		return m.playItem(item, false)
 
@@ -106,6 +114,46 @@ func (m *Model) playSeasonContinuously(item service.MediaItem) tea.Cmd {
 
 	return func() tea.Msg {
 		plan, err := m.svc.BuildContinuousPlayback(item)
+		if err != nil {
+			return playDoneMsg{err: err}
+		}
+
+		startPosSec := plan.StreamInfo.PositionSec
+		playSessionID := strings.ReplaceAll(uuid.New().String(), "-", "")
+		result := player.PlayMultipleWithHook(plan.URLs, plan.Title, nil, startPosSec, plan.StartIndex, func() {
+			_ = m.svc.ReportPlaybackStart(plan.CurrentItem.ID, plan.StreamInfo.MediaSourceID, playSessionID, startPosSec)
+		})
+
+		durationTicks := plan.CurrentItem.RunTimeTicks
+		reportOK := result.Err == nil
+		if plan.CurrentItem.ID != "" && result.PositionSec > 0 {
+			reportOK = m.svc.ReportPlaybackStopped(plan.CurrentItem.ID, plan.StreamInfo.MediaSourceID, playSessionID, result.PositionSec, durationTicks) == nil && reportOK
+		}
+
+		return playDoneMsg{
+			itemID:        plan.CurrentItem.ID,
+			positionSec:   result.PositionSec,
+			durationTicks: durationTicks,
+			reportOK:      reportOK,
+			err:           result.Err,
+		}
+	}
+}
+
+func (m *Model) playPlaylistContinuously() tea.Cmd {
+	if m.view.playlistID == "" {
+		m.status = "Cannot play playlist: missing playlist"
+		return nil
+	}
+	item, ok := m.currentItem()
+	if !ok {
+		m.status = "Cannot play playlist: no current item"
+		return nil
+	}
+
+	m.status = "Loading playlist..."
+	return func() tea.Msg {
+		plan, err := m.svc.BuildPlaylistPlayback(m.view.playlistID, item.ID)
 		if err != nil {
 			return playDoneMsg{err: err}
 		}
@@ -239,7 +287,7 @@ func (m *Model) syncItemState(itemID string, updater func(*service.MediaItem)) {
 func (m *Model) refreshCurrentView() (tea.Model, tea.Cmd) {
 	m.state = StateLoading
 	m.keepCursor = true
-	if m.section == SectionResume || m.section == SectionFavorites {
+	if m.section == SectionResume || m.section == SectionFavorites || m.section == SectionPlaylists {
 		delete(m.sectionCache, m.section)
 	}
 
@@ -271,6 +319,12 @@ func (m *Model) loadActiveView() tea.Cmd {
 
 	case viewItems:
 		return m.loadItems(m.view.parentID, m.page)
+
+	case viewPlaylists:
+		return m.loadPlaylists()
+
+	case viewPlaylistItems:
+		return m.loadPlaylistItems(m.view.playlistID)
 	}
 	return m.loadResume()
 }
@@ -296,9 +350,11 @@ func (m *Model) switchSection(target Section, loader func() tea.Cmd) (tea.Model,
 		m.view = viewState{mode: viewHistory}
 	case SectionSearch:
 		m.view = viewState{mode: viewSearch}
+	case SectionPlaylists:
+		m.view = viewState{mode: viewPlaylists}
 	}
 
-	if (target == SectionResume || target == SectionFavorites) && len(m.navStack) == 0 {
+	if (target == SectionResume || target == SectionFavorites || target == SectionPlaylists) && len(m.navStack) == 0 {
 		if cached, ok := m.sectionCache[target]; ok && len(cached) > 0 {
 			m.items = cached
 			m.totalItems = len(cached)
@@ -311,6 +367,35 @@ func (m *Model) switchSection(target Section, loader func() tea.Cmd) (tea.Model,
 
 	m.state = StateLoading
 	return m, loader()
+}
+
+func (m *Model) startAddToPlaylist(item service.MediaItem) (tea.Model, tea.Cmd) {
+	if !item.Playable {
+		m.status = "Only playable items can be added to playlists"
+		return m, nil
+	}
+
+	playlists, err := m.svc.GetPlaylists()
+	if err != nil {
+		m.status = "Load playlists failed: " + err.Error()
+		return m, nil
+	}
+
+	pending := item
+	m.pendingPlaylistItem = &pending
+	m.playlistChoices = playlists.Items
+	m.playlistCursor = 0
+	m.state = StatePlaylistSelect
+	m.status = "Select playlist"
+	return m, nil
+}
+
+func (m *Model) startPlaylistEdit(id, name string) (tea.Model, tea.Cmd) {
+	m.editingPlaylistID = id
+	m.playlistInput.SetValue(name)
+	m.playlistInput.CursorEnd()
+	m.state = StatePlaylistEdit
+	return m, tea.Batch(m.playlistInput.Focus(), textinput.Blink)
 }
 
 func (m *Model) pingServers() tea.Cmd {

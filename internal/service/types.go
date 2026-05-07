@@ -97,6 +97,15 @@ type ContinuousPlaybackPlan struct {
 	StreamInfo  *StreamInfo `json:"streamInfo,omitempty"`
 }
 
+type PlaylistSummary struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	ItemCount   int    `json:"itemCount"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
+}
+
 type ServerInfo struct {
 	Index    int    `json:"index"`
 	Name     string `json:"name"`

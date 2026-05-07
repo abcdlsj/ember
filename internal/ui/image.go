@@ -3,8 +3,11 @@ package ui
 import (
 	"fmt"
 	"image"
+	"image/color"
+	stddraw "image/draw"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	chafa "github.com/ploMP4/chafa-go"
+	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )
 
@@ -98,6 +102,126 @@ func RenderImage(urls []string, width, height int) string {
 	imageCache[cacheKey] = placeholder
 	imageCacheMu.Unlock()
 	return placeholder
+}
+
+func RenderImageGrid(urlGroups [][]string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+
+	filtered := make([][]string, 0, len(urlGroups))
+	var keyParts []string
+	for _, urls := range urlGroups {
+		var group []string
+		for _, url := range urls {
+			if strings.TrimSpace(url) != "" {
+				group = append(group, url)
+			}
+		}
+		if len(group) > 0 {
+			filtered = append(filtered, group)
+			keyParts = append(keyParts, strings.Join(group, ","))
+		}
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+
+	const maxGridImages = 9
+	if len(filtered) > maxGridImages {
+		filtered = filtered[:maxGridImages]
+		keyParts = keyParts[:maxGridImages]
+	}
+
+	cacheKey := fmt.Sprintf("grid|%s|%dx%d", strings.Join(keyParts, "\n"), width, height)
+	imageCacheMu.RLock()
+	if cached, ok := imageCache[cacheKey]; ok {
+		imageCacheMu.RUnlock()
+		return cached
+	}
+	imageCacheMu.RUnlock()
+
+	images := make([]image.Image, 0, len(filtered))
+	for _, urls := range filtered {
+		for _, url := range urls {
+			img, err := fetchImage(url)
+			if err != nil {
+				continue
+			}
+			images = append(images, img)
+			break
+		}
+	}
+	if len(images) == 0 {
+		return ""
+	}
+
+	canvasWidth := width * 8
+	canvasHeight := height * 8
+	if canvasWidth < 8 {
+		canvasWidth = 8
+	}
+	if canvasHeight < 8 {
+		canvasHeight = 8
+	}
+
+	canvas := image.NewRGBA(image.Rect(0, 0, canvasWidth, canvasHeight))
+	bg := image.NewUniform(color.RGBA{R: 30, G: 30, B: 34, A: 255})
+	stddraw.Draw(canvas, canvas.Bounds(), bg, image.Point{}, stddraw.Src)
+
+	cols := int(math.Ceil(math.Sqrt(float64(len(images)))))
+	rows := int(math.Ceil(float64(len(images)) / float64(cols)))
+	tileWidth := canvasWidth / cols
+	tileHeight := canvasHeight / rows
+
+	for i, img := range images {
+		col := i % cols
+		row := i / cols
+		rect := image.Rect(col*tileWidth, row*tileHeight, (col+1)*tileWidth, (row+1)*tileHeight)
+		if col == cols-1 {
+			rect.Max.X = canvasWidth
+		}
+		if row == rows-1 {
+			rect.Max.Y = canvasHeight
+		}
+		drawCover(canvas, rect, img)
+	}
+
+	result := renderChafa(canvas, width, height)
+	if strings.TrimSpace(result) == "" {
+		return ""
+	}
+
+	imageCacheMu.Lock()
+	imageCache[cacheKey] = result
+	imageCacheMu.Unlock()
+	return result
+}
+
+func drawCover(dst *image.RGBA, dstRect image.Rectangle, src image.Image) {
+	srcBounds := src.Bounds()
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+	dstW := dstRect.Dx()
+	dstH := dstRect.Dy()
+	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 {
+		return
+	}
+
+	srcAspect := float64(srcW) / float64(srcH)
+	dstAspect := float64(dstW) / float64(dstH)
+	crop := srcBounds
+	if srcAspect > dstAspect {
+		newW := int(float64(srcH) * dstAspect)
+		x0 := srcBounds.Min.X + (srcW-newW)/2
+		crop = image.Rect(x0, srcBounds.Min.Y, x0+newW, srcBounds.Max.Y)
+	} else if srcAspect < dstAspect {
+		newH := int(float64(srcW) / dstAspect)
+		y0 := srcBounds.Min.Y + (srcH-newH)/2
+		crop = image.Rect(srcBounds.Min.X, y0, srcBounds.Max.X, y0+newH)
+	}
+
+	xdraw.CatmullRom.Scale(dst, dstRect, src, crop, stddraw.Over, nil)
 }
 
 func calculateRenderSize(imgWidth, imgHeight, maxWidth, maxHeight int) (int, int) {

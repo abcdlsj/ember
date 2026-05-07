@@ -21,6 +21,7 @@ const (
 	SectionFavorites
 	SectionHistory
 	SectionSearch
+	SectionPlaylists
 )
 
 type State int
@@ -31,6 +32,8 @@ const (
 	StateSearching
 	StateServerManage
 	StateServerEdit
+	StatePlaylistSelect
+	StatePlaylistEdit
 )
 
 type viewMode int
@@ -43,13 +46,17 @@ const (
 	viewItems
 	viewSeasons
 	viewEpisodes
+	viewPlaylists
+	viewPlaylistItems
 )
 
 type viewState struct {
-	mode     viewMode
-	parentID string
-	seriesID string
-	seasonID string
+	mode         viewMode
+	parentID     string
+	seriesID     string
+	seasonID     string
+	playlistID   string
+	playlistName string
 }
 
 type Model struct {
@@ -72,6 +79,7 @@ type Model struct {
 
 	searchInput     textinput.Model
 	lastSearchQuery string
+	playlistInput   textinput.Model
 	spinner         spinner.Model
 	status          string
 	latency         time.Duration
@@ -94,6 +102,11 @@ type Model struct {
 	serverLatencies  map[int]time.Duration
 	pingInProgress   bool
 	prevServerPrefix string
+
+	playlistChoices     []service.MediaItem
+	playlistCursor      int
+	pendingPlaylistItem *service.MediaItem
+	editingPlaylistID   string
 }
 
 type NavState struct {
@@ -164,6 +177,16 @@ func New(svc *service.MediaService) *Model {
 	ti.PromptStyle = inputPromptStyle
 	ti.Cursor.Style = inputCursorStyle
 
+	playlistInput := textinput.New()
+	playlistInput.Prompt = ""
+	playlistInput.Placeholder = "Playlist name..."
+	playlistInput.CharLimit = 80
+	playlistInput.Width = 30
+	playlistInput.TextStyle = inputTextStyle
+	playlistInput.PlaceholderStyle = inputPlaceholderStyle
+	playlistInput.PromptStyle = inputPromptStyle
+	playlistInput.Cursor.Style = inputCursorStyle
+
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -180,6 +203,7 @@ func New(svc *service.MediaService) *Model {
 		view:            viewState{mode: viewResume},
 		pageSize:        20,
 		searchInput:     ti,
+		playlistInput:   playlistInput,
 		spinner:         sp,
 		status:          "Connecting...",
 		coverCache:      make(map[string]string),
@@ -287,6 +311,26 @@ func (m *Model) loadFavorites() tea.Cmd {
 	}
 }
 
+func (m *Model) loadPlaylists() tea.Cmd {
+	return func() tea.Msg {
+		list, err := m.svc.GetPlaylists()
+		if err != nil {
+			return itemsMsg{err: err}
+		}
+		return itemsMsg{items: list.Items, total: list.Total}
+	}
+}
+
+func (m *Model) loadPlaylistItems(playlistID string) tea.Cmd {
+	return func() tea.Msg {
+		list, err := m.svc.GetPlaylistItems(playlistID)
+		if err != nil {
+			return itemsMsg{err: err}
+		}
+		return itemsMsg{items: list.Items, total: list.Total}
+	}
+}
+
 func (m *Model) toggleFavorite(item service.MediaItem) tea.Cmd {
 	target := true
 	if item.UserData != nil {
@@ -325,6 +369,32 @@ func (m *Model) loadImage(item service.MediaItem, width, height int) tea.Cmd {
 
 		img := RenderImage(urls, width, height)
 		return imageMsg{id: item.ID, image: img}
+	}
+}
+
+func (m *Model) loadPlaylistCover(playlistID string, width, height int) tea.Cmd {
+	return func() tea.Msg {
+		if width <= 0 || height <= 0 {
+			return imageMsg{id: playlistID, image: ""}
+		}
+
+		list, err := m.svc.GetPlaylistItems(playlistID)
+		if err != nil {
+			return imageMsg{id: playlistID, image: ""}
+		}
+
+		urlGroups := make([][]string, 0, len(list.Items))
+		for _, item := range list.Items {
+			urls := item.ImageURLs
+			if len(urls) == 0 && item.ImageURL != "" {
+				urls = []string{item.ImageURL}
+			}
+			if len(urls) > 0 {
+				urlGroups = append(urlGroups, urls)
+			}
+		}
+
+		return imageMsg{id: playlistID, image: RenderImageGrid(urlGroups, width, height)}
 	}
 }
 
@@ -381,7 +451,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.keepCursor = false
 			m.state = StateBrowsing
 			m.status = ""
-			if m.section == SectionResume || m.section == SectionFavorites {
+			if m.section == SectionResume || m.section == SectionFavorites || m.section == SectionPlaylists {
 				m.sectionCache[m.section] = msg.items
 				m.sectionCursor[m.section] = m.cursor
 			}
@@ -498,6 +568,12 @@ func (m *Model) loadVisibleImages() tea.Cmd {
 
 	for i := start; i < end; i++ {
 		item := m.items[i]
+		if item.Type == "Playlist" {
+			if _, ok := m.coverCache[item.ID]; !ok {
+				cmds = append(cmds, m.loadPlaylistCover(item.ID, coverWidth, coverHeight))
+			}
+			continue
+		}
 		if _, ok := m.coverCache[item.ID]; !ok {
 			cmds = append(cmds, m.loadImage(item, coverWidth, coverHeight))
 		}
@@ -505,8 +581,10 @@ func (m *Model) loadVisibleImages() tea.Cmd {
 
 	if m.cursor < len(m.items) {
 		curItem := m.items[m.cursor]
-		if _, ok := m.detailCache[curItem.ID]; !ok {
-			cmds = append(cmds, m.loadDetail(curItem.ID))
+		if curItem.Type != "Playlist" {
+			if _, ok := m.detailCache[curItem.ID]; !ok {
+				cmds = append(cmds, m.loadDetail(curItem.ID))
+			}
 		}
 	}
 
@@ -522,6 +600,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.state == StateServerEdit {
 		return m.handleServerEditKey(msg)
+	}
+	if m.state == StatePlaylistSelect {
+		return m.handlePlaylistSelectKey(msg)
+	}
+	if m.state == StatePlaylistEdit {
+		return m.handlePlaylistEditKey(msg)
 	}
 
 	switch msg.String() {
@@ -585,10 +669,63 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchInput.SetValue(m.lastSearchQuery)
 		return m, tea.Batch(m.searchInput.Focus(), textinput.Blink)
 
+	case "5":
+		return m.switchSection(SectionPlaylists, m.loadPlaylists)
+
+	case "A":
+		if item, ok := m.currentItem(); ok {
+			return m.startAddToPlaylist(item)
+		}
+
+	case "N":
+		return m.startPlaylistEdit("", "")
+
+	case "E":
+		if m.view.mode == viewPlaylists {
+			if item, ok := m.currentItem(); ok && item.Type == "Playlist" {
+				return m.startPlaylistEdit(item.ID, item.Name)
+			}
+		}
+
+	case "X":
+		if m.view.mode == viewPlaylists {
+			if item, ok := m.currentItem(); ok && item.Type == "Playlist" {
+				if err := m.svc.DeletePlaylist(item.ID); err != nil {
+					m.status = "Delete playlist failed: " + err.Error()
+					return m, nil
+				}
+				delete(m.sectionCache, SectionPlaylists)
+				delete(m.coverCache, item.ID)
+				m.status = "Playlist deleted"
+				return m.refreshCurrentView()
+			}
+		}
+
+	case "D":
+		if m.view.mode == viewPlaylistItems {
+			if item, ok := m.currentItem(); ok {
+				if err := m.svc.RemoveItemFromPlaylist(m.view.playlistID, item.ID); err != nil {
+					m.status = "Remove failed: " + err.Error()
+					return m, nil
+				}
+				delete(m.sectionCache, SectionPlaylists)
+				delete(m.coverCache, m.view.playlistID)
+				m.status = "Removed from playlist"
+				return m.refreshCurrentView()
+			}
+		}
+
+	case "P":
+		if m.view.mode == viewPlaylistItems {
+			return m, m.playPlaylistContinuously()
+		}
+
 	case "f":
 		if len(m.items) > 0 && m.cursor < len(m.items) {
 			item := m.items[m.cursor]
-			return m, m.toggleFavorite(item)
+			if item.Type != "Playlist" {
+				return m, m.toggleFavorite(item)
+			}
 		}
 
 	case "c":
@@ -667,6 +804,131 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.searchInput, cmd = m.searchInput.Update(msg)
+	return m, cmd
+}
+
+func (m *Model) handlePlaylistSelectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.pendingPlaylistItem = nil
+		m.playlistChoices = nil
+		m.state = StateBrowsing
+		m.status = ""
+		return m, nil
+
+	case "up", "k", "left", "h":
+		if m.playlistCursor > 0 {
+			m.playlistCursor--
+		}
+
+	case "down", "j", "right", "l":
+		if m.playlistCursor < len(m.playlistChoices) {
+			m.playlistCursor++
+		}
+
+	case "N":
+		return m.startPlaylistEdit("", "")
+
+	case "enter":
+		if m.pendingPlaylistItem == nil {
+			m.state = StateBrowsing
+			return m, nil
+		}
+		if m.playlistCursor <= 0 {
+			return m.startPlaylistEdit("", "")
+		}
+		if m.playlistCursor > len(m.playlistChoices) {
+			m.playlistCursor = 0
+			return m, nil
+		}
+		playlist := m.playlistChoices[m.playlistCursor-1]
+		if err := m.svc.AddItemToPlaylist(playlist.ID, *m.pendingPlaylistItem); err != nil {
+			m.status = "Add to playlist failed: " + err.Error()
+			m.state = StateBrowsing
+			return m, nil
+		}
+		delete(m.sectionCache, SectionPlaylists)
+		delete(m.coverCache, playlist.ID)
+		m.pendingPlaylistItem = nil
+		m.playlistChoices = nil
+		m.state = StateBrowsing
+		m.status = "Added to playlist: " + playlist.Name
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m *Model) handlePlaylistEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.editingPlaylistID = ""
+		m.playlistInput.Blur()
+		if m.pendingPlaylistItem != nil {
+			m.state = StatePlaylistSelect
+			return m, nil
+		}
+		m.pendingPlaylistItem = nil
+		m.state = StateBrowsing
+		return m, nil
+
+	case "enter":
+		name := strings.TrimSpace(m.playlistInput.Value())
+		if name == "" {
+			m.status = "Playlist name is required"
+			return m, nil
+		}
+
+		var id string
+		var displayName string
+		if m.editingPlaylistID == "" {
+			playlist, err := m.svc.CreatePlaylist(name, "")
+			if err != nil {
+				m.status = "Create playlist failed: " + err.Error()
+				return m, nil
+			}
+			id = playlist.ID
+			displayName = playlist.Name
+			m.status = "Playlist created: " + playlist.Name
+		} else {
+			playlist, err := m.svc.RenamePlaylist(m.editingPlaylistID, name)
+			if err != nil {
+				m.status = "Rename playlist failed: " + err.Error()
+				return m, nil
+			}
+			id = playlist.ID
+			displayName = playlist.Name
+			m.status = "Playlist renamed"
+			if m.view.playlistID == id {
+				m.view.playlistName = displayName
+			}
+		}
+
+		if m.pendingPlaylistItem != nil {
+			if err := m.svc.AddItemToPlaylist(id, *m.pendingPlaylistItem); err != nil {
+				m.status = "Add to playlist failed: " + err.Error()
+				return m, nil
+			}
+			m.status = "Added to playlist: " + displayName
+		}
+
+		delete(m.sectionCache, SectionPlaylists)
+		delete(m.coverCache, id)
+		m.pendingPlaylistItem = nil
+		m.playlistChoices = nil
+		m.editingPlaylistID = ""
+		m.playlistInput.Blur()
+
+		if m.section == SectionPlaylists || m.view.mode == viewPlaylists {
+			m.state = StateLoading
+			return m, m.loadActiveView()
+		}
+		m.state = StateBrowsing
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.playlistInput, cmd = m.playlistInput.Update(msg)
 	return m, cmd
 }
 

@@ -54,6 +54,27 @@ type MediaDetail struct {
 	UpdatedAt   string         `json:"updated_at,omitempty"`
 }
 
+type Playlist struct {
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Items       []PlaylistEntry `json:"items,omitempty"`
+	CreatedAt   string          `json:"created_at"`
+	UpdatedAt   string          `json:"updated_at"`
+}
+
+type PlaylistEntry struct {
+	ItemID     string `json:"item_id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Year       int    `json:"year,omitempty"`
+	SeriesID   string `json:"series_id,omitempty"`
+	SeriesName string `json:"series_name,omitempty"`
+	SeasonID   string `json:"season_id,omitempty"`
+	SeasonName string `json:"season_name,omitempty"`
+	AddedAt    string `json:"added_at"`
+}
+
 type ServerConfig struct {
 	Servers      []Server `json:"servers,omitempty"`
 	ActiveServer int      `json:"active_server"`
@@ -62,6 +83,7 @@ type ServerConfig struct {
 type ServerData struct {
 	Items        map[string]ItemMeta    `json:"items,omitempty"`
 	MediaDetails map[string]MediaDetail `json:"media_details,omitempty"`
+	Playlists    map[string]Playlist    `json:"playlists,omitempty"`
 }
 
 var (
@@ -97,6 +119,12 @@ func (s *Store) ensureItemsMap() {
 func (s *Store) ensureMediaDetailsMap() {
 	if s.data.MediaDetails == nil {
 		s.data.MediaDetails = make(map[string]MediaDetail)
+	}
+}
+
+func (s *Store) ensurePlaylistsMap() {
+	if s.data.Playlists == nil {
+		s.data.Playlists = make(map[string]Playlist)
 	}
 }
 
@@ -207,6 +235,54 @@ func (s *Store) GetPlaybackPosition(itemID string) int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.data.MediaDetails[itemID].PositionSec
+}
+
+func (s *Store) ListPlaylists() []Playlist {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	playlists := make([]Playlist, 0, len(s.data.Playlists))
+	for _, playlist := range s.data.Playlists {
+		playlists = append(playlists, clonePlaylist(playlist))
+	}
+	return playlists
+}
+
+func (s *Store) GetPlaylist(id string) (Playlist, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	playlist, ok := s.data.Playlists[id]
+	if !ok {
+		return Playlist{}, false
+	}
+	return clonePlaylist(playlist), true
+}
+
+func (s *Store) SavePlaylist(playlist Playlist) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensurePlaylistsMap()
+	s.data.Playlists[playlist.ID] = clonePlaylist(playlist)
+	_ = s.saveData()
+}
+
+func (s *Store) DeletePlaylist(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.data.Playlists == nil {
+		return
+	}
+	delete(s.data.Playlists, id)
+	_ = s.saveData()
+}
+
+func clonePlaylist(playlist Playlist) Playlist {
+	if len(playlist.Items) == 0 {
+		return playlist
+	}
+	items := make([]PlaylistEntry, len(playlist.Items))
+	copy(items, playlist.Items)
+	playlist.Items = items
+	return playlist
 }
 
 func (s *Store) GetServers() []Server {

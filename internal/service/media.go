@@ -2,11 +2,15 @@ package service
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"ember/internal/api"
 	"ember/internal/player"
 	"ember/internal/storage"
+
+	"github.com/google/uuid"
 )
 
 type MediaService struct {
@@ -202,6 +206,188 @@ func (s *MediaService) GetHistory(page, pageSize int) (*MediaList, error) {
 	}, nil
 }
 
+func (s *MediaService) GetPlaylists() (*MediaList, error) {
+	playlists := s.store.ListPlaylists()
+	sort.SliceStable(playlists, func(i, j int) bool {
+		return playlists[i].UpdatedAt > playlists[j].UpdatedAt
+	})
+
+	items := make([]MediaItem, len(playlists))
+	for i, playlist := range playlists {
+		items[i] = MediaItem{
+			ID:        playlist.ID,
+			Name:      playlist.Name,
+			Type:      "Playlist",
+			Overview:  fmt.Sprintf("%d items", len(playlist.Items)),
+			Browsable: true,
+		}
+	}
+
+	return &MediaList{
+		Items:    items,
+		Total:    len(items),
+		Page:     0,
+		PageSize: len(items),
+		HasMore:  false,
+	}, nil
+}
+
+func (s *MediaService) CreatePlaylist(name, description string) (*PlaylistSummary, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("playlist name is required")
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	playlist := storage.Playlist{
+		ID:          uuid.NewString(),
+		Name:        name,
+		Description: strings.TrimSpace(description),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	s.store.SavePlaylist(playlist)
+	return playlistSummary(playlist), nil
+}
+
+func (s *MediaService) RenamePlaylist(id, name string) (*PlaylistSummary, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("playlist name is required")
+	}
+	playlist, ok := s.store.GetPlaylist(id)
+	if !ok {
+		return nil, fmt.Errorf("playlist not found")
+	}
+	playlist.Name = name
+	playlist.UpdatedAt = time.Now().Format(time.RFC3339)
+	s.store.SavePlaylist(playlist)
+	return playlistSummary(playlist), nil
+}
+
+func (s *MediaService) DeletePlaylist(id string) error {
+	if _, ok := s.store.GetPlaylist(id); !ok {
+		return fmt.Errorf("playlist not found")
+	}
+	s.store.DeletePlaylist(id)
+	return nil
+}
+
+func (s *MediaService) AddItemToPlaylist(playlistID string, item MediaItem) error {
+	if !item.Playable {
+		return fmt.Errorf("only playable items can be added to playlists")
+	}
+	playlist, ok := s.store.GetPlaylist(playlistID)
+	if !ok {
+		return fmt.Errorf("playlist not found")
+	}
+
+	for _, entry := range playlist.Items {
+		if entry.ItemID == item.ID {
+			return nil
+		}
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	playlist.Items = append(playlist.Items, storage.PlaylistEntry{
+		ItemID:     item.ID,
+		Name:       item.Name,
+		Type:       item.Type,
+		Year:       item.Year,
+		SeriesID:   item.SeriesID,
+		SeriesName: item.SeriesName,
+		SeasonID:   item.SeasonID,
+		SeasonName: item.SeasonName,
+		AddedAt:    now,
+	})
+	playlist.UpdatedAt = now
+	s.store.SavePlaylist(playlist)
+	return nil
+}
+
+func (s *MediaService) RemoveItemFromPlaylist(playlistID, itemID string) error {
+	playlist, ok := s.store.GetPlaylist(playlistID)
+	if !ok {
+		return fmt.Errorf("playlist not found")
+	}
+
+	next := playlist.Items[:0]
+	removed := false
+	for _, entry := range playlist.Items {
+		if entry.ItemID == itemID {
+			removed = true
+			continue
+		}
+		next = append(next, entry)
+	}
+	if !removed {
+		return nil
+	}
+
+	playlist.Items = next
+	playlist.UpdatedAt = time.Now().Format(time.RFC3339)
+	s.store.SavePlaylist(playlist)
+	return nil
+}
+
+func (s *MediaService) GetPlaylistItems(playlistID string) (*MediaList, error) {
+	playlist, ok := s.store.GetPlaylist(playlistID)
+	if !ok {
+		return nil, fmt.Errorf("playlist not found")
+	}
+
+	items := make([]MediaItem, 0, len(playlist.Items))
+	for _, entry := range playlist.Items {
+		item, err := s.GetItem(entry.ItemID)
+		if err == nil && item != nil {
+			items = append(items, *item)
+			continue
+		}
+		items = append(items, playlistEntryItem(entry))
+	}
+
+	return &MediaList{
+		Items:    items,
+		Total:    len(items),
+		Page:     0,
+		PageSize: len(items),
+		HasMore:  false,
+	}, nil
+}
+
+func (s *MediaService) GetPlaylistName(playlistID string) string {
+	playlist, ok := s.store.GetPlaylist(playlistID)
+	if !ok {
+		return ""
+	}
+	return playlist.Name
+}
+
+func playlistSummary(playlist storage.Playlist) *PlaylistSummary {
+	return &PlaylistSummary{
+		ID:          playlist.ID,
+		Name:        playlist.Name,
+		Description: playlist.Description,
+		ItemCount:   len(playlist.Items),
+		CreatedAt:   playlist.CreatedAt,
+		UpdatedAt:   playlist.UpdatedAt,
+	}
+}
+
+func playlistEntryItem(entry storage.PlaylistEntry) MediaItem {
+	return MediaItem{
+		ID:         entry.ItemID,
+		Name:       entry.Name,
+		Type:       entry.Type,
+		Year:       entry.Year,
+		SeriesID:   entry.SeriesID,
+		SeriesName: entry.SeriesName,
+		SeasonID:   entry.SeasonID,
+		SeasonName: entry.SeasonName,
+		Playable:   entry.Type == "Movie" || entry.Type == "Episode" || entry.Type == "Video",
+	}
+}
+
 func (s *MediaService) GetItem(itemID string) (*MediaItem, error) {
 	item, err := s.client.GetItem(itemID)
 	if err != nil {
@@ -393,6 +579,61 @@ func (s *MediaService) BuildContinuousPlayback(item MediaItem) (*ContinuousPlayb
 
 	return &ContinuousPlaybackPlan{
 		Title:       title,
+		StartIndex:  0,
+		URLs:        urls,
+		CurrentItem: currentItem,
+		StreamInfo:  streamInfo,
+	}, nil
+}
+
+func (s *MediaService) BuildPlaylistPlayback(playlistID, startItemID string) (*ContinuousPlaybackPlan, error) {
+	playlist, ok := s.store.GetPlaylist(playlistID)
+	if !ok {
+		return nil, fmt.Errorf("playlist not found")
+	}
+	if len(playlist.Items) == 0 {
+		return nil, fmt.Errorf("playlist is empty")
+	}
+
+	startIndex := 0
+	for i, entry := range playlist.Items {
+		if entry.ItemID == startItemID {
+			startIndex = i
+			break
+		}
+	}
+
+	urls := make([]string, 0, len(playlist.Items)-startIndex)
+	var currentItem MediaItem
+	currentSet := false
+	for i := startIndex; i < len(playlist.Items); i++ {
+		item, err := s.client.GetItem(playlist.Items[i].ItemID)
+		if err != nil || len(item.MediaSources) == 0 {
+			continue
+		}
+
+		ms := item.MediaSources[0]
+		urls = append(urls, s.client.StreamURL(item.ID, ms.ID, ms.Container))
+		if !currentSet {
+			currentItem = s.convertItem(*item)
+			currentSet = true
+		}
+	}
+
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no playable items found")
+	}
+	if !currentSet {
+		return nil, fmt.Errorf("no playable item found")
+	}
+
+	streamInfo, err := s.GetStreamInfoForItem(currentItem)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ContinuousPlaybackPlan{
+		Title:       playlist.Name,
 		StartIndex:  0,
 		URLs:        urls,
 		CurrentItem: currentItem,
