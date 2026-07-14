@@ -3,522 +3,441 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
-	"ember/internal/player"
 	"ember/internal/service"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
+// Foreground-only terminal palette. Ember deliberately inherits the user's
+// terminal background so it works with dark, light and transparent themes.
+const (
+	colorCanvas  = ""
+	colorLine    = "240"
+	colorText    = "252"
+	colorMuted   = "244"
+	colorFaint   = "241"
+	colorAccent  = "205"
+	colorAccent2 = "99"
+	colorContext = "81"
+	colorGood    = "82"
+	colorBad     = "196"
+)
+
+var sections = []struct {
+	key   string
+	label string
+	sec   Section
+}{
+	{"1", "Continue", SectionResume},
+	{"2", "Favorites", SectionFavorites},
+	{"3", "History", SectionHistory},
+	{"4", "Search", SectionSearch},
+	{"5", "Playlists", SectionPlaylists},
+}
+
 func (m *Model) View() string {
-	if m.width == 0 {
-		return "Loading..."
+	if m.width == 0 || m.height == 0 {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render("Starting Ember…")
 	}
 
-	statusWidth := 32
-	if m.width < 100 {
-		statusWidth = 28
+	headerHeight := minInt(2, m.height)
+	if m.useSidebar() {
+		headerHeight = minInt(1, m.height)
 	}
-	contentWidth := m.width - statusWidth
+	bodyHeight := maxInt(1, m.height-headerHeight)
+	header := newSurface(m.width, headerHeight, colorCanvas).Render(m.renderHeader(m.width, headerHeight))
 
-	content := m.renderCarousel(contentWidth, m.height)
-	status := m.renderStatus(statusWidth, m.height)
+	var body string
+	if m.useSidebar() {
+		sidebarWidth := m.sidebarWidth()
+		contentWidth := maxInt(1, m.width-sidebarWidth-1)
+		sidebar := newSurface(sidebarWidth, bodyHeight, colorCanvas).Render(m.renderStatus(sidebarWidth, bodyHeight))
+		divider := newSurface(1, bodyHeight, colorCanvas).Render(verticalRule(bodyHeight))
+		content := newSurface(contentWidth, bodyHeight, colorCanvas).Render(m.renderCarousel(contentWidth, bodyHeight))
+		body = joinHorizontal(bodyHeight, sidebar, divider, content)
+	} else {
+		body = newSurface(m.width, bodyHeight, colorCanvas).Render(m.renderCarousel(m.width, bodyHeight))
+	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, status, content)
+	return joinVertical(header, body)
+}
+
+func (m *Model) renderHeader(width, height int) string {
+	brand := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent2)).Render("EMBER")
+
+	server := "OFFLINE"
+	if srv := m.svc.GetActiveServer(); srv != nil {
+		server = srv.Name
+		if server == "" {
+			server = srv.URL
+		}
+	}
+	latency := m.latency.Milliseconds()
+	connection := fmt.Sprintf("%s  ·  %dms", truncateText(server, 22), latency)
+
+	if width < 48 {
+		connection = ""
+	}
+	right := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(connection)
+	line := spread(brand, right, width)
+	line = lipgloss.NewStyle().Width(width).Render(line)
+
+	if height <= 1 || m.useSidebar() {
+		return line
+	}
+	nav := m.renderCompactNav(width)
+	return lipgloss.JoinVertical(lipgloss.Left, line, nav)
+}
+
+func (m *Model) renderCompactNav(width int) string {
+	var entries []string
+	for _, section := range sections {
+		label := section.key + " " + section.label
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted))
+		if section.sec == m.activeSection() {
+			style = style.Bold(true).Foreground(lipgloss.Color(colorAccent))
+			label = "› " + label
+		} else {
+			label = "  " + label
+		}
+		entries = append(entries, style.Render(label))
+	}
+	nav := strings.Join(entries, "   ")
+	if lipgloss.Width(nav) > width {
+		active := sectionLabel(m.activeSection())
+		nav = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Render("› " + active)
+	}
+	return lipgloss.NewStyle().Width(width).Render(nav)
 }
 
 func (m *Model) renderCarousel(width, height int) string {
-	style := lipgloss.NewStyle().
+	canvas := lipgloss.NewStyle().
 		Width(width).
 		Height(height)
 
 	if m.helpVisible {
-		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderHelp(width - 6))
+		return canvas.Align(lipgloss.Center, lipgloss.Center).Render(m.renderHelp(minInt(72, width-4)))
 	}
-
 	if m.state == StateServerManage {
-		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderServerManage())
+		return canvas.Align(lipgloss.Center, lipgloss.Center).Render(m.renderServerManage())
 	}
-
 	if m.state == StateServerEdit {
-		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderServerEdit())
+		return canvas.Align(lipgloss.Center, lipgloss.Center).Render(m.renderServerEdit())
 	}
-
 	if m.state == StateSearching {
-		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderSearch())
+		return canvas.Align(lipgloss.Center, lipgloss.Center).Render(m.renderSearch())
 	}
-
 	if m.state == StatePlaylistSelect {
-		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderPlaylistSelect())
+		return canvas.Align(lipgloss.Center, lipgloss.Center).Render(m.renderPlaylistSelect())
 	}
-
 	if m.state == StatePlaylistEdit {
-		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.renderPlaylistEdit())
+		return canvas.Align(lipgloss.Center, lipgloss.Center).Render(m.renderPlaylistEdit())
 	}
-
 	if m.state == StateLoading {
-		return style.Align(lipgloss.Center, lipgloss.Center).Render(m.spinner.View() + " Loading...")
+		loading := lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent)).Render(m.spinner.View()) +
+			lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render("  Loading…")
+		return canvas.Align(lipgloss.Center, lipgloss.Center).Render(loading)
 	}
 
 	if len(m.items) == 0 {
-		parts := []string{lipgloss.NewStyle().Width(width).Align(lipgloss.Center).Render(m.emptyStateText())}
-		if header := m.renderContentHeader(width); header != "" {
-			parts = append([]string{header}, parts...)
-		}
-		empty := lipgloss.JoinVertical(lipgloss.Left, parts...)
-		return style.Align(lipgloss.Center, lipgloss.Center).Render(empty)
+		empty := lipgloss.JoinVertical(lipgloss.Center,
+			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorText)).Render("Nothing here"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(m.emptyStateText()),
+			"",
+			lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render("r refresh  ·  / search"),
+		)
+		return canvas.Align(lipgloss.Center, lipgloss.Center).Render(empty)
 	}
 
 	coverWidth, coverHeight := m.coverFrame(width, height)
-
-	var cover string
-	if m.cursor < 0 || m.cursor >= len(m.items) {
-		cover = m.renderEmptyCover(coverWidth, coverHeight)
-	} else {
-		cover = m.renderCover(m.items[m.cursor], coverWidth, coverHeight, true)
+	item, ok := m.currentItem()
+	cover := m.renderEmptyCover(coverWidth, coverHeight)
+	if ok {
+		cover = m.renderCover(item, coverWidth, coverHeight, true)
 	}
-
-	var info string
-	if m.cursor < len(m.items) {
-		item := m.items[m.cursor]
-		info = m.renderItemInfo(item, width)
-	}
-
-	nav := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("244")).
-		Align(lipgloss.Center).
-		Width(width).
-		Render(fmt.Sprintf("< %d / %d >  Page %d  Total %d", m.cursor+1, len(m.items), m.page+1, m.totalItems))
 
 	coverBlock := lipgloss.NewStyle().
 		Width(width).
 		Height(coverHeight).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(cover)
+	info := m.renderItemInfo(item, width)
+	footer := m.renderMediaFooter(width)
 
-	parts := []string{coverBlock, "", info, nav}
-	if header := m.renderContentHeader(width); header != "" {
-		parts = append([]string{header}, parts...)
-	}
-	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	return style.Align(lipgloss.Center, lipgloss.Top).Render(content)
+	return canvas.Render(lipgloss.JoinVertical(lipgloss.Left, coverBlock, info, footer))
 }
 
 func (m *Model) renderCover(item service.MediaItem, width, height int, selected bool) string {
 	if img, ok := m.coverCache[item.ID]; ok && img != "" {
-		imgStyle := lipgloss.NewStyle().
+		return lipgloss.NewStyle().
 			Width(width).
 			Height(height).
 			MaxWidth(width).
-			Align(lipgloss.Center, lipgloss.Center)
-		return imgStyle.Render(img)
+			Align(lipgloss.Center, lipgloss.Center).
+			Render(img)
 	}
-
 	return m.renderPlaceholder(item, width, height, selected)
 }
 
 func (m *Model) renderPlaceholder(item service.MediaItem, width, height int, selected bool) string {
-	bgColor := "236"
-	fgColor := "244"
-	if selected {
-		bgColor = "237"
-		fgColor = "252"
-	}
-
 	typeLabels := map[string]string{
-		"Movie":            "MOVIE",
-		"Series":           "SERIES",
-		"Season":           "SEASON",
-		"Episode":          "EP",
-		"Playlist":         "PLAYLIST",
-		"CollectionFolder": "LIBRARY",
-		"Folder":           "FOLDER",
-		"BoxSet":           "BOXSET",
+		"Movie": "FEATURE", "Series": "SERIES", "Season": "SEASON", "Episode": "EPISODE",
+		"Playlist": "PLAYLIST", "CollectionFolder": "LIBRARY", "Folder": "FOLDER", "BoxSet": "COLLECTION",
 	}
-
 	label := typeLabels[item.Type]
 	if label == "" {
-		label = item.Type
+		label = strings.ToUpper(item.Type)
 	}
-
-	style := lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		Background(lipgloss.Color(bgColor)).
-		Foreground(lipgloss.Color(fgColor)).
-		Align(lipgloss.Center, lipgloss.Center)
-
-	return style.Render(label)
+	glyph := "◇"
+	if selected {
+		glyph = "◆"
+	}
+	text := lipgloss.JoinVertical(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent2)).Render(glyph),
+		lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(label),
+	)
+	if height < 4 {
+		text = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent2)).Render(glyph)
+	}
+	return lipgloss.NewStyle().
+		Width(maxInt(1, width-2)).
+		Height(maxInt(1, height-2)).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color(colorLine)).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(text)
 }
 
 func (m *Model) renderEmptyCover(width, height int) string {
-	style := lipgloss.NewStyle().
-		Width(width).
-		Height(height)
-
-	return style.Render("")
+	return lipgloss.NewStyle().Width(width).Height(height).Render("")
 }
 
 func (m *Model) renderItemInfo(item service.MediaItem, width int) string {
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("255")).
-		Width(width).
-		Align(lipgloss.Center)
-
-	lineStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("244")).
-		Width(width).
-		Align(lipgloss.Center)
-
+	inner := maxInt(1, width-4)
 	title := item.Name
-	if item.Year > 0 {
-		title = fmt.Sprintf("%s (%d)", item.Name, item.Year)
-	}
 	if item.IndexNumber > 0 {
-		title = fmt.Sprintf("EP %02d - %s", item.IndexNumber, item.Name)
+		title = fmt.Sprintf("%02d  /  %s", item.IndexNumber, item.Name)
 	}
-	if context := itemContext(item); context != "" {
-		title = title + "  /  " + context
+	context := itemContext(item)
+	if context != "" {
+		context = strings.ToUpper(context)
 	}
 
-	lines := []string{titleStyle.Render(truncateText(title, width-2))}
-	meta := strings.Join(itemMeta(item), "  ")
-	lines = append(lines, lineStyle.Render(truncateText(meta, width-2)))
+	titleLine := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorText)).Render(truncateText(title, inner))
+	meta := strings.Join(itemMeta(item), "  ·  ")
+	metaLine := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(truncateText(meta, inner))
+	if context != "" {
+		metaLine = lipgloss.NewStyle().Foreground(lipgloss.Color(colorContext)).Render(truncateText(context, inner)) + "   " + metaLine
+	}
 
+	progress := ""
+	if item.UserData != nil && item.UserData.PlaybackPositionPct > 0 && !item.UserData.Played {
+		progress = renderProgress(inner, item.UserData.PlaybackPositionPct)
+	}
+	content := lipgloss.JoinVertical(lipgloss.Center, titleLine, metaLine, progress)
 	return lipgloss.NewStyle().
 		Width(width).
-		Height(2).
-		Align(lipgloss.Center, lipgloss.Bottom).
-		Render(lipgloss.JoinVertical(lipgloss.Center, lines...))
+		Height(4).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(content)
+}
+
+func (m *Model) renderMediaFooter(width int) string {
+	count := fmt.Sprintf("%02d / %02d", m.cursor+1, len(m.items))
+	if m.totalItems > len(m.items) {
+		count += fmt.Sprintf("  ·  PAGE %d  ·  %d TITLES", m.page+1, m.totalItems)
+	}
+	left := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render("← " + count + " →")
+	hints := "enter open  ·  p play  ·  ? help"
+	if width < 64 {
+		hints = "enter open  ·  p play"
+	}
+	if width < 44 {
+		hints = "? help"
+	}
+	if strings.TrimSpace(m.status) != "" {
+		hints = m.status
+	}
+	right := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(hints)
+	separator := lipgloss.NewStyle().Foreground(lipgloss.Color(colorLine)).Render(strings.Repeat("─", width))
+	row := spread(" "+left, right+" ", width)
+	return lipgloss.JoinVertical(lipgloss.Left, separator, row)
+}
+
+func (m *Model) renderStatus(width, height int) string {
+	inner := maxInt(1, width-2)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted))
+	accent := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
+	good := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGood))
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color(colorFaint))
+	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colorLine)).Render(strings.Repeat("─", inner))
+
+	var lines []string
+	for _, section := range sections {
+		text := truncateText(fmt.Sprintf("%s %s", section.key, section.label), inner)
+		style := dim
+		if section.sec == m.activeSection() {
+			style = accent
+		}
+		lines = append(lines, style.Render(text))
+	}
+
+	server := "NO SERVER"
+	if active := m.svc.GetActiveServer(); active != nil {
+		server = active.Name
+		if server == "" {
+			server = active.URL
+		}
+	}
+	bottom := []string{
+		divider,
+		good.Render(truncateText("● "+server, inner)),
+		key.Render(truncateText("m Servers", inner)),
+		key.Render(truncateText("? Help", inner)),
+	}
+	padding := maxInt(1, height-len(lines)-len(bottom)-2)
+	lines = append(lines, make([]string, padding)...)
+	lines = append(lines, bottom...)
+	return lipgloss.NewStyle().Width(inner).Margin(1, 1, 0, 1).Render(strings.Join(lines, "\n"))
 }
 
 func (m *Model) renderSearch() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render("Search")
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	inputLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
-
-	queryLine := lipgloss.JoinHorizontal(lipgloss.Left, inputLabelStyle.Render("Query:")+" ", m.searchInput.View())
-	lines := []string{title, queryLine, labelStyle.Render("Search by title or keyword.")}
+	const panelWidth = 56
+	inner := m.modalContentWidth(panelWidth)
+	description := "Type a title or keyword"
 	if strings.TrimSpace(m.lastSearchQuery) != "" {
-		lines = append(lines, labelStyle.Render(`Last query: "`+m.lastSearchQuery+`"`))
+		description = `Previous: “` + m.lastSearchQuery + `”`
 	}
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
-		"[Enter] search  [Esc] cancel",
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		modalTitle("Search"),
+		lipgloss.NewStyle().Foreground(lipgloss.Color(colorLine)).Render(strings.Repeat("─", inner)),
+		"",
+		m.inputFrame(m.searchInput.View(), inner),
+		"",
+		muted(description),
+		"",
+		spread(muted("enter  search"), muted("esc  cancel"), inner),
 	)
-	lines = append(lines, hint)
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	return m.modalCard(body, panelWidth)
 }
 
 func (m *Model) renderPlaylistSelect() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render("Add to Playlist")
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	selectedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-
-	var itemName string
+	lines := []string{modalEyebrow("COLLECTIONS"), modalTitle("Add to playlist")}
 	if m.pendingPlaylistItem != nil {
-		itemName = m.pendingPlaylistItem.Name
-	}
-
-	lines := []string{title}
-	if itemName != "" {
-		lines = append(lines, labelStyle.Render(truncateText(itemName, 60)))
+		lines = append(lines, muted(truncateText(m.pendingPlaylistItem.Name, 48)))
 	}
 	lines = append(lines, "")
-
-	newPrefix := "  "
-	newStyle := labelStyle
-	if m.playlistCursor == 0 {
-		newPrefix = "> "
-		newStyle = selectedStyle
-	}
-	lines = append(lines, newStyle.Render(newPrefix+"+ New playlist..."))
-
-	for i, playlist := range m.playlistChoices {
-		cursor := i + 1
+	choices := append([]service.MediaItem{{Name: "+  Create new playlist"}}, m.playlistChoices...)
+	for i, playlist := range choices {
 		prefix := "  "
-		style := labelStyle
-		if cursor == m.playlistCursor {
-			prefix = "> "
-			style = selectedStyle
+		style := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted))
+		if i == m.playlistCursor {
+			prefix = "▌ "
+			style = style.Bold(true).Foreground(lipgloss.Color(colorAccent2))
 		}
-		lines = append(lines, style.Render(prefix+truncateText(playlist.Name, 50)))
+		lines = append(lines, style.Render(prefix+truncateText(playlist.Name, 46)))
 	}
-
-	hint := labelStyle.MarginTop(1).Render("[Enter] choose  [N] new  [Esc] cancel")
-	lines = append(lines, hint)
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	lines = append(lines, "", modalHint("ENTER  CHOOSE", "N  NEW", "ESC  CANCEL"))
+	return m.modalCard(strings.Join(lines, "\n"), 56)
 }
 
 func (m *Model) renderPlaylistEdit() string {
-	title := "New Playlist"
+	title := "Create a playlist"
 	if m.editingPlaylistID != "" {
-		title = "Rename Playlist"
+		title = "Rename playlist"
 	}
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render(title)
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	inputLabelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
-
-	nameLine := lipgloss.JoinHorizontal(lipgloss.Left, inputLabelStyle.Render("Name:")+" ", m.playlistInput.View())
-	hint := labelStyle.MarginTop(1).Render("[Enter] save  [Esc] cancel")
-	return lipgloss.JoinVertical(lipgloss.Left, titleStyle, nameLine, hint)
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		modalEyebrow("COLLECTIONS"), modalTitle(title), "",
+		m.inputFrame(m.playlistInput.View(), 48), "",
+		modalHint("ENTER  SAVE", "ESC  CANCEL"),
+	)
+	return m.modalCard(body, 56)
 }
 
 func (m *Model) renderServerManage() string {
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render("Server Management")
-
+	lines := []string{modalEyebrow("CONNECTIONS"), modalTitle("Media servers"), ""}
 	servers := m.svc.GetServers()
 	if len(servers) == 0 {
-		emptyMsg := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("No servers configured")
-		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render("[a]dd  [esc] back")
-		return lipgloss.JoinVertical(lipgloss.Center, title, emptyMsg, hint)
+		lines = append(lines, muted("No servers configured."), "")
+	} else {
+		activeIdx := m.svc.Store().GetActiveServerIndex()
+		activePrefix := ""
+		if srv := m.svc.GetActiveServer(); srv != nil {
+			activePrefix = srv.Prefix
+		}
+		for i, srv := range servers {
+			lines = append(lines, m.renderServerLine(i, srv, activeIdx, activePrefix))
+		}
+		lines = append(lines, "")
 	}
-
-	activeIdx := m.svc.Store().GetActiveServerIndex()
-	activePrefix := ""
-	if srv := m.svc.GetActiveServer(); srv != nil {
-		activePrefix = srv.Prefix
-	}
-
-	lines := make([]string, len(servers))
-	for i, srv := range servers {
-		lines[i] = m.renderServerLine(i, srv, activeIdx, activePrefix)
-	}
-
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
-		"[a]dd  [e]dit  [d]elete  [p]ing  [enter] connect  [esc] back",
-	)
-
-	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	return lipgloss.JoinVertical(lipgloss.Center, title, content, hint)
+	lines = append(lines, modalHint("ENTER  CONNECT", "A  ADD", "E  EDIT", "D  DELETE", "P  PING", "ESC  BACK"))
+	return m.modalCard(strings.Join(lines, "\n"), 64)
 }
 
 func (m *Model) renderServerLine(idx int, srv service.ServerInfo, activeIdx int, activePrefix string) string {
-	prefix := "  "
-	if idx == activeIdx {
-		prefix = "* "
-	}
-
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	if idx == m.serverCursor {
-		style = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	}
-
 	name := srv.Name
 	if name == "" {
 		name = srv.URL
 	}
-
-	line := style.Render(prefix + name)
-
-	if lat, ok := m.serverLatencies[idx]; ok {
-		line += renderLatency(lat.Milliseconds())
-	} else if srv.Prefix == activePrefix && m.pingInProgress {
-		line += lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(" ...")
+	marker := "  "
+	if idx == activeIdx {
+		marker = "● "
 	}
-
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted))
+	if idx == m.serverCursor {
+		marker = "▌ "
+		style = style.Bold(true).Foreground(lipgloss.Color(colorAccent2))
+	}
+	line := style.Render(marker + truncateText(name, 42))
+	if lat, ok := m.serverLatencies[idx]; ok {
+		line += "  " + renderLatency(lat.Milliseconds())
+	} else if srv.Prefix == activePrefix && m.pingInProgress {
+		line += muted("  PINGING…")
+	}
 	return line
 }
 
 func renderLatency(lat int64) string {
-	color := "82"
+	color := colorGood
 	if lat > 1000 {
-		color = "196"
+		color = colorBad
 	} else if lat > 500 {
-		color = "214"
+		color = colorAccent
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fmt.Sprintf(" %dms", lat))
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("%dms", lat))
 }
 
 func (m *Model) renderServerEdit() string {
-	title := "Add Server"
+	title := "Add a server"
 	if m.editingServer >= 0 {
-		title = "Edit Server"
+		title = "Edit server"
 	}
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).MarginBottom(1).Render(title)
-
-	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Width(12)
-	var fields []string
-	labels := []string{"Name:", "URL:", "Username:", "Password:"}
+	labels := []string{"DISPLAY NAME", "SERVER URL", "USERNAME", "PASSWORD"}
+	lines := []string{modalEyebrow("CONNECTIONS"), modalTitle(title), ""}
 	for i, input := range m.serverInputs {
-		label := labelStyle.Render(labels[i])
-		fields = append(fields, lipgloss.JoinHorizontal(lipgloss.Left, label, input.View()))
+		lines = append(lines, modalEyebrow(labels[i]), m.inputFrame(input.View(), 48), "")
 	}
-
-	tip := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Italic(true).MarginTop(1).Render(
-		"Name: same prefix = shared data (e.g. HomeNAS Main, HomeNAS Backup)",
-	)
-
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).MarginTop(1).Render(
-		"[Tab] next  [Enter] save  [Esc] cancel",
-	)
-
-	content := lipgloss.JoinVertical(lipgloss.Left, fields...)
-	return lipgloss.JoinVertical(lipgloss.Center, titleStyle, content, tip, hint)
-}
-
-func (m *Model) renderStatus(width, height int) string {
-	style := lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		Padding(1, 2)
-
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99")).Render("EMBER")
-
-	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", width-4))
-
-	var serverName string
-	if srv := m.svc.GetActiveServer(); srv != nil {
-		serverName = srv.Name
-		if serverName == "" {
-			serverName = srv.URL
-		}
-		if len(serverName) > width-6 {
-			serverName = serverName[:width-9] + "..."
-		}
-	} else {
-		serverName = "(no server)"
-	}
-
-	sections := []struct {
-		key  string
-		name string
-		sec  Section
-	}{
-		{"1", "Continue", SectionResume},
-		{"2", "Favorites", SectionFavorites},
-		{"3", "History", SectionHistory},
-		{"4", "Search", SectionSearch},
-		{"5", "Playlists", SectionPlaylists},
-	}
-
-	var navItems []string
-	for _, s := range sections {
-		line := fmt.Sprintf(" %s  %s", s.key, s.name)
-		if m.activeSection() == s.sec {
-			line = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).Render(line)
-		} else {
-			line = lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(line)
-		}
-		navItems = append(navItems, line)
-	}
-
-	latency := renderLatency(int64(m.latency / 1000000))
-
-	mpvStatus := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(" N/A")
-	if player.Available() {
-		mpvStatus = " OK"
-	}
-
-	logStatus := " OFF"
-	if m.loggingEnabled {
-		logStatus = " ON"
-	}
-	logStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Render(logStatus)
-
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	highlightStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
-
-	lines := []string{
-		title,
-		dimStyle.Render(serverName),
-		divider,
-		dimStyle.Render("Navigation:"),
-	}
-	lines = append(lines, navItems...)
-	lines = append(lines,
-		"",
-		divider,
-		dimStyle.Render("Status:"),
-		dimStyle.Render(" Latency:")+latency,
-		dimStyle.Render(" MPV:")+mpvStatus,
-		dimStyle.Render(" Log:")+logStatus,
-	)
-
-	if strings.TrimSpace(m.status) != "" {
-		lines = append(lines, "", dimStyle.Render(m.status))
-	}
-
-	if path := m.currentBreadcrumb(); path != "" {
-		lines = append(lines, dimStyle.Render(" Path:")+highlightStyle.Render(" "+truncateText(path, width-11)))
-	}
-
-	if m.lastPlayPosition > 0 {
-		lines = append(lines, "", divider)
-		lines = append(lines, highlightStyle.Render("Last Play:"))
-		lines = append(lines, dimStyle.Render(formatDuration(m.lastPlayPosition)))
-		reportStatus := "OK"
-		if !m.lastReportOK {
-			reportStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("FAIL")
-		}
-		lines = append(lines, dimStyle.Render("Report: ")+reportStatus)
-	}
-
-	lines = append(lines,
-		"",
-		divider,
-		dimStyle.Render("Actions:"),
-	)
-	for _, action := range m.statusActions() {
-		lines = append(lines, dimStyle.Render(action))
-	}
-
-	return style.Render(strings.Join(lines, "\n"))
-}
-
-func (m *Model) renderContentHeader(width int) string {
-	path := m.currentBreadcrumb()
-	if path == "" {
-		return ""
-	}
-	breadcrumb := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("244")).
-		Width(width).
-		Render(path)
-
-	return breadcrumb
+	lines = append(lines, muted("Matching name prefixes share local metadata."), "", modalHint("TAB  NEXT", "ENTER  SAVE", "ESC  CANCEL"))
+	return m.modalCard(strings.Join(lines, "\n"), 58)
 }
 
 func (m *Model) renderHelp(width int) string {
-	style := lipgloss.NewStyle().
-		Width(width).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("99")).
-		Padding(1, 2)
+	columns := lipgloss.JoinHorizontal(lipgloss.Top,
+		helpColumn("NAVIGATE", []string{"← → / H L   Move", "ENTER       Open", "ESC         Back", "1—5         Sections", "/           Search"}, 25),
+		helpColumn("PLAYBACK", []string{"P           Play", "R           Restart", "C           Continue season", "F           Favorite", "A           Add to playlist"}, 27),
+	)
+	manage := helpColumn("MANAGE", []string{"N / E / X   New · Rename · Delete", "S / ⇧S      Season · Series", "M           Servers", "R           Refresh", "Q           Quit"}, 52)
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		modalEyebrow("COMMAND PALETTE"), modalTitle("Keyboard shortcuts"), "", columns, "", manage, "", modalHint("? / ESC  CLOSE"),
+	)
+	return m.modalCard(body, minInt(64, maxInt(36, width)))
+}
 
-	lines := []string{
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("117")).Render("Help"),
-		"",
-		"Navigation",
-		"  1/2/3/5 switch sections",
-		"  4 or / open search",
-		"  left/right move or change page",
-		"  enter open item",
-		"  esc/backspace go back",
-		"",
-		"Playback",
-		"  p play current item",
-		"  R replay from beginning",
-		"  c continuous play for episode",
-		"",
-		"Actions",
-		"  A add to playlist",
-		"  N new playlist",
-		"  E rename playlist",
-		"  X delete playlist",
-		"  D remove from playlist",
-		"  P play playlist",
-		"  f toggle favorite",
-		"  s jump to season",
-		"  S jump to series",
-		"  r refresh current view",
-		"  m manage servers",
-		"  d toggle debug log",
-		"",
-		"Press ? or Esc to close",
-	}
-
-	return style.Render(strings.Join(lines, "\n"))
+func helpColumn(title string, rows []string, width int) string {
+	return lipgloss.NewStyle().Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, append([]string{modalEyebrow(title), ""}, rows...)...))
 }
 
 func (m *Model) activeSection() Section {
@@ -533,13 +452,13 @@ func (m *Model) currentBreadcrumb() string {
 		if strings.TrimSpace(m.lastSearchQuery) == "" {
 			return ""
 		}
-		return `Search / "` + m.lastSearchQuery + `"`
+		return `Search / “` + m.lastSearchQuery + `”`
 	}
 	parts := make([]string, 0, 2)
 	switch m.view.mode {
 	case viewSearch:
 		if strings.TrimSpace(m.lastSearchQuery) != "" {
-			parts = append(parts, "Search", `"`+m.lastSearchQuery+`"`)
+			parts = append(parts, "Search", `“`+m.lastSearchQuery+`”`)
 		}
 	case viewItems:
 		if m.currentLib != nil && strings.TrimSpace(m.currentLib.Name) != "" {
@@ -589,7 +508,7 @@ func itemContext(item service.MediaItem) string {
 }
 
 func itemMeta(item service.MediaItem) []string {
-	parts := []string{item.Type}
+	parts := []string{strings.ToUpper(item.Type)}
 	if item.Type == "Playlist" && strings.TrimSpace(item.Overview) != "" {
 		parts = append(parts, item.Overview)
 	}
@@ -602,116 +521,124 @@ func itemMeta(item service.MediaItem) []string {
 	if item.UserData != nil {
 		switch {
 		case item.UserData.Played:
-			parts = append(parts, "Played")
+			parts = append(parts, "WATCHED")
 		case item.UserData.PlaybackPositionPct > 0:
-			parts = append(parts, fmt.Sprintf("%d%% watched", item.UserData.PlaybackPositionPct))
+			parts = append(parts, fmt.Sprintf("%d%% WATCHED", item.UserData.PlaybackPositionPct))
 		}
 		if item.UserData.IsFavorite {
-			parts = append(parts, "Favorite")
+			parts = append(parts, "♥ FAVORITE")
 		}
 	}
 	return parts
 }
 
-func truncateText(text string, max int) string {
-	text = strings.TrimSpace(text)
-	if text == "" || max <= 0 {
+func truncateText(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || max <= 0 {
 		return ""
 	}
-	runes := []rune(text)
-	if len(runes) <= max {
-		return text
+	if ansi.StringWidth(value) <= max {
+		return value
 	}
-	if max <= 1 {
-		return string(runes[:max])
+	if max == 1 {
+		return "…"
 	}
-	return string(runes[:max-1]) + "…"
+	return ansi.Truncate(value, max, "…")
+}
+
+func wrapText(value string, width, maxLines int) []string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" || width <= 0 || maxLines <= 0 {
+		return nil
+	}
+	var lines []string
+	for len(value) > 0 && len(lines) < maxLines {
+		if utf8.RuneCountInString(value) <= width {
+			lines = append(lines, value)
+			break
+		}
+		runes := []rune(value)
+		cut := width
+		for i := width; i > width/2; i-- {
+			if runes[i] == ' ' {
+				cut = i
+				break
+			}
+		}
+		lines = append(lines, strings.TrimSpace(string(runes[:cut])))
+		value = strings.TrimSpace(string(runes[cut:]))
+	}
+	if value != "" && len(lines) == maxLines && len(lines) > 0 {
+		lines[len(lines)-1] = truncateText(lines[len(lines)-1], maxInt(1, width-1)) + "…"
+	}
+	return lines
 }
 
 func (m *Model) emptyStateText() string {
 	switch m.view.mode {
 	case viewResume:
-		return "Nothing to continue"
+		return "Nothing in progress. Start something excellent."
 	case viewFavorites:
-		return "No favorites yet"
+		return "Favorite a title and it will live here."
 	case viewHistory:
-		return "No watch history"
+		return "Your watch history is empty."
 	case viewSearch:
 		if strings.TrimSpace(m.lastSearchQuery) == "" {
-			return "Enter a keyword to search"
+			return "Enter a title or keyword to begin."
 		}
-		return `No results for "` + m.lastSearchQuery + `"`
+		return `No matches for “` + m.lastSearchQuery + `”.`
 	case viewItems:
-		return "Library is empty"
+		return "This library has no visible titles."
 	case viewPlaylists:
-		return "No playlists yet"
+		return "Create a playlist to build your first collection."
 	case viewPlaylistItems:
-		return "Playlist is empty"
+		return "This playlist is waiting for its first title."
 	case viewSeasons:
-		return "No seasons"
+		return "No seasons are available."
 	case viewEpisodes:
-		return "No episodes"
+		return "No episodes are available."
 	default:
-		return "Nothing here"
+		return "Nothing here yet."
 	}
 }
 
 func (m *Model) loadErrorText(err error) string {
-	switch m.view.mode {
-	case viewSearch:
-		return "Search failed: " + err.Error()
-	case viewResume:
-		return "Failed to load continue list: " + err.Error()
-	case viewFavorites:
-		return "Failed to load favorites: " + err.Error()
-	case viewHistory:
-		return "Failed to load history: " + err.Error()
-	case viewItems:
-		return "Failed to load library: " + err.Error()
-	case viewPlaylists:
-		return "Failed to load playlists: " + err.Error()
-	case viewPlaylistItems:
-		return "Failed to load playlist: " + err.Error()
-	case viewSeasons:
-		return "Failed to load seasons: " + err.Error()
-	case viewEpisodes:
-		return "Failed to load episodes: " + err.Error()
-	default:
-		return "Load failed: " + err.Error()
+	labels := map[viewMode]string{
+		viewSearch: "Search failed", viewResume: "Could not load Continue", viewFavorites: "Could not load Favorites",
+		viewHistory: "Could not load History", viewItems: "Could not load library", viewPlaylists: "Could not load playlists",
+		viewPlaylistItems: "Could not load playlist", viewSeasons: "Could not load seasons", viewEpisodes: "Could not load episodes",
 	}
+	label := labels[m.view.mode]
+	if label == "" {
+		label = "Load failed"
+	}
+	return label + ": " + err.Error()
 }
 
 func (m *Model) statusActions() []string {
-	actions := []string{
-		" ←→  move",
-		" ↵   open",
-		" esc back",
-	}
-
+	actions := []string{"← →   Move", "↵     Open", "ESC   Back"}
 	item, ok := m.currentItem()
 	if ok {
 		if item.Playable {
-			actions = append(actions, " p   play", " R   replay")
+			actions = append(actions, "P     Play", "R     Restart")
 		}
 		if item.Type == "Episode" {
-			actions = append(actions, " c   continuous", " s   season", " S   series")
+			actions = append(actions, "C     Play season", "S/⇧S  Season / series")
 		} else if item.Type == "Season" {
-			actions = append(actions, " S   series")
+			actions = append(actions, "⇧S    Open series")
 		}
 		if item.Type != "Playlist" {
-			actions = append(actions, " f   toggle fav")
+			actions = append(actions, "F     Favorite")
 		}
 	}
-
 	if m.view.mode == viewPlaylists {
-		actions = append(actions, " N   new list", " E   rename", " X   delete")
+		actions = append(actions, "N/E/X New / edit / delete")
 	} else if m.view.mode == viewPlaylistItems {
-		actions = append(actions, " A   add to list", " D   remove", " P   play list")
+		actions = append(actions, "A/D   Add / remove", "⇧P    Play playlist")
 	} else if ok && item.Playable {
-		actions = append(actions, " A   add to list")
+		actions = append(actions, "A     Add to playlist")
 	}
-
-	actions = append(actions, " r   refresh", " 4,/ search", " ?   help", " q   quit")
+	actions = append(actions, "?     All shortcuts")
 	return actions
 }
 
@@ -722,23 +649,116 @@ func (m *Model) currentItem() (service.MediaItem, bool) {
 	return m.items[m.cursor], true
 }
 
+func (m *Model) useSidebar() bool { return m.width >= 104 && m.height >= 22 }
+
+func (m *Model) sidebarWidth() int {
+	if m.width >= 150 {
+		return 22
+	}
+	return 20
+}
+
+func (m *Model) mediaViewport() (int, int) {
+	w := m.width
+	headerHeight := minInt(2, m.height)
+	if m.useSidebar() {
+		w -= m.sidebarWidth() + 1
+		headerHeight = minInt(1, m.height)
+	}
+	return maxInt(1, w), maxInt(1, m.height-headerHeight)
+}
+
 func (m *Model) coverFrame(width, height int) (int, int) {
-	coverWidth := width - 4
-	if coverWidth < 1 {
-		coverWidth = 1
-	}
-
-	reserved := lipgloss.Height(m.renderContentHeader(width)) + 4
-
-	coverHeight := height - reserved
-	if coverHeight < 1 {
-		coverHeight = 1
-	}
-	if coverHeight > height {
-		coverHeight = height
-	}
-
+	coverWidth := maxInt(1, width-2)
+	coverHeight := maxInt(1, height-6)
 	return coverWidth, coverHeight
+}
+
+func sectionLabel(section Section) string {
+	for _, item := range sections {
+		if item.sec == section {
+			return item.label
+		}
+	}
+	return "EMBER"
+}
+
+func renderProgress(width, pct int) string {
+	width = maxInt(4, width)
+	pct = maxInt(0, minInt(100, pct))
+	filled := width * pct / 100
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent2)).Render(strings.Repeat("━", filled)) +
+		lipgloss.NewStyle().Foreground(lipgloss.Color(colorLine)).Render(strings.Repeat("━", width-filled))
+}
+
+func verticalRule(height int) string {
+	if height <= 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colorLine)).Render(
+		strings.TrimSuffix(strings.Repeat("│\n", height), "\n"),
+	)
+}
+
+// modalContentWidth is the usable text width inside a modal card — the outer
+// Width() minus 2×padding, so callers can size dividers/inputs to this value
+// without wrapping.
+func (m *Model) modalContentWidth(preferredWidth int) int {
+	viewportWidth, _ := m.mediaViewport()
+	outerWidth := minInt(preferredWidth, maxInt(12, viewportWidth-4))
+	return maxInt(6, outerWidth-6)
+}
+
+func (m *Model) modalCard(content string, preferredWidth int) string {
+	inner := m.modalContentWidth(preferredWidth)
+	return lipgloss.NewStyle().
+		Width(inner + 4).
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(colorLine)).
+		Foreground(lipgloss.Color(colorText)).
+		Render(content)
+}
+
+func modalEyebrow(value string) string {
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent)).Render(value)
+}
+
+func modalTitle(value string) string {
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorText)).Render(value)
+}
+
+func modalHint(values ...string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(strings.Join(values, "   "))
+}
+
+func muted(value string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render(value)
+}
+
+func (m *Model) inputFrame(value string, preferredWidth int) string {
+	viewportWidth, _ := m.mediaViewport()
+	outerWidth := minInt(preferredWidth, maxInt(8, viewportWidth-10))
+	return lipgloss.NewStyle().
+		Width(maxInt(4, outerWidth-4)).
+		Padding(0, 1).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color(colorLine)).
+		Render(value)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func formatDuration(sec int64) string {

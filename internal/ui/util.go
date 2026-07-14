@@ -2,6 +2,7 @@ package ui
 
 import (
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func (m *Model) initServerInputs(name, url, username, password string) {
@@ -31,6 +32,12 @@ func (m *Model) initServerInputs(name, url, username, password string) {
 	m.serverInputs[3].EchoMode = textinput.EchoPassword
 	m.serverInputs[3].CharLimit = 100
 	m.serverInputs[3].Width = 40
+
+	for i := range m.serverInputs {
+		m.serverInputs[i].TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+		m.serverInputs[i].PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(colorFaint))
+		m.serverInputs[i].Cursor.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent))
+	}
 
 	m.serverFocused = 0
 }

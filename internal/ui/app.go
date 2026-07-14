@@ -162,14 +162,14 @@ type playDoneMsg struct {
 }
 
 func New(svc *service.MediaService) *Model {
-	inputTextStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	inputPlaceholderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	inputPromptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	inputCursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
+	inputTextStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorText))
+	inputPlaceholderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorFaint))
+	inputPromptStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted))
+	inputCursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent))
 
 	ti := textinput.New()
 	ti.Prompt = ""
-	ti.Placeholder = "Search..."
+	ti.Placeholder = "Search titles, series, episodes…"
 	ti.CharLimit = 100
 	ti.Width = 30
 	ti.TextStyle = inputTextStyle
@@ -179,7 +179,7 @@ func New(svc *service.MediaService) *Model {
 
 	playlistInput := textinput.New()
 	playlistInput.Prompt = ""
-	playlistInput.Placeholder = "Playlist name..."
+	playlistInput.Placeholder = "Name your collection…"
 	playlistInput.CharLimit = 80
 	playlistInput.Width = 30
 	playlistInput.TextStyle = inputTextStyle
@@ -189,7 +189,7 @@ func New(svc *service.MediaService) *Model {
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAccent))
 
 	initialState := StateLoading
 	if svc.Store().GetActiveServer() == nil {
@@ -349,7 +349,7 @@ func (m *Model) toggleFavorite(item service.MediaItem) tea.Cmd {
 func (m *Model) pingServer() tea.Cmd {
 	return func() tea.Msg {
 		status := m.svc.GetServerStatus()
-		return pingMsg(status.Latency)
+		return pingMsg(time.Duration(status.Latency) * time.Millisecond)
 	}
 }
 
@@ -471,7 +471,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pingMsg:
 		m.latency = time.Duration(msg)
 		return m, tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
-			return pingMsg(m.svc.GetServerStatus().Latency)
+			return pingMsg(time.Duration(m.svc.GetServerStatus().Latency) * time.Millisecond)
 		})
 
 	case spinner.TickMsg:
@@ -556,12 +556,8 @@ func (m *Model) loadVisibleImages() tea.Cmd {
 		end = len(m.items)
 	}
 
-	statusWidth := 32
-	if m.width < 100 {
-		statusWidth = 28
-	}
-	contentWidth := m.width - statusWidth
-	coverWidth, coverHeight := m.coverFrame(contentWidth, m.height)
+	contentWidth, contentHeight := m.mediaViewport()
+	coverWidth, coverHeight := m.coverFrame(contentWidth, contentHeight)
 	if coverWidth <= 0 || coverHeight <= 0 {
 		return nil
 	}
