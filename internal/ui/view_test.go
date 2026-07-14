@@ -75,9 +75,9 @@ func TestSidebarUsesOneAlignmentGrid(t *testing.T) {
 	if strings.Contains(sidebar, "Browse") || strings.Contains(sidebar, "Server\n") {
 		t.Fatalf("sidebar still contains redundant headings:\n%s", sidebar)
 	}
-	for _, expected := range []string{"1 Continue", "2 Favorites", "● ", "m Servers", "? Help"} {
+	for _, expected := range []string{"EMBER", "Continue", "Favorites", "History", "Search", "Playlists", "● ", "m Servers", "? Help"} {
 		if !strings.Contains(sidebar, expected) {
-			t.Fatalf("sidebar is missing aligned row %q:\n%s", expected, sidebar)
+			t.Fatalf("sidebar is missing row %q:\n%s", expected, sidebar)
 		}
 	}
 	if strings.Contains(sidebar, "titles") {
@@ -86,6 +86,23 @@ func TestSidebarUsesOneAlignmentGrid(t *testing.T) {
 	for _, indent := range []string{"  1 Continue", "  2 Favorites"} {
 		if strings.Contains(sidebar, indent) {
 			t.Fatalf("sidebar rows should not be indented, got %q:\n%s", indent, sidebar)
+		}
+	}
+	// Section rows should place the digit at column 0 and label at the right edge.
+	for _, section := range []string{"1", "2", "3", "4", "5"} {
+		row := ""
+		for _, line := range strings.Split(sidebar, "\n") {
+			trimmed := strings.TrimLeft(line, " ")
+			if strings.HasPrefix(trimmed, section+" ") {
+				row = trimmed
+				break
+			}
+		}
+		if row == "" {
+			t.Fatalf("could not find sidebar row for section %s:\n%s", section, sidebar)
+		}
+		if !strings.HasPrefix(row, section) {
+			t.Fatalf("section %s row should start with the key: %q", section, row)
 		}
 	}
 }

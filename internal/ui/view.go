@@ -43,25 +43,19 @@ func (m *Model) View() string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted)).Render("Starting Ember…")
 	}
 
-	headerHeight := minInt(2, m.height)
-	if m.useSidebar() {
-		headerHeight = minInt(1, m.height)
-	}
-	bodyHeight := maxInt(1, m.height-headerHeight)
-	header := newSurface(m.width, headerHeight, colorCanvas).Render(m.renderHeader(m.width, headerHeight))
-
-	var body string
 	if m.useSidebar() {
 		sidebarWidth := m.sidebarWidth()
 		contentWidth := maxInt(1, m.width-sidebarWidth-1)
-		sidebar := newSurface(sidebarWidth, bodyHeight, colorCanvas).Render(m.renderStatus(sidebarWidth, bodyHeight))
-		divider := newSurface(1, bodyHeight, colorCanvas).Render(verticalRule(bodyHeight))
-		content := newSurface(contentWidth, bodyHeight, colorCanvas).Render(m.renderCarousel(contentWidth, bodyHeight))
-		body = joinHorizontal(bodyHeight, sidebar, divider, content)
-	} else {
-		body = newSurface(m.width, bodyHeight, colorCanvas).Render(m.renderCarousel(m.width, bodyHeight))
+		sidebar := newSurface(sidebarWidth, m.height, colorCanvas).Render(m.renderStatus(sidebarWidth, m.height))
+		divider := newSurface(1, m.height, colorCanvas).Render(verticalRule(m.height))
+		content := newSurface(contentWidth, m.height, colorCanvas).Render(m.renderCarousel(contentWidth, m.height))
+		return joinHorizontal(m.height, sidebar, divider, content)
 	}
 
+	headerHeight := minInt(2, m.height)
+	bodyHeight := maxInt(1, m.height-headerHeight)
+	header := newSurface(m.width, headerHeight, colorCanvas).Render(m.renderHeader(m.width, headerHeight))
+	body := newSurface(m.width, bodyHeight, colorCanvas).Render(m.renderCarousel(m.width, bodyHeight))
 	return joinVertical(header, body)
 }
 
@@ -85,7 +79,7 @@ func (m *Model) renderHeader(width, height int) string {
 	line := spread(brand, right, width)
 	line = lipgloss.NewStyle().Width(width).Render(line)
 
-	if height <= 1 || m.useSidebar() {
+	if height <= 1 {
 		return line
 	}
 	nav := m.renderCompactNav(width)
@@ -267,22 +261,40 @@ func (m *Model) renderMediaFooter(width int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, separator, row)
 }
 
+var emberLogo = []string{
+	"█▀▀ █▄▀▄█ █▀▄ █▀▀ █▀▄",
+	"█▀▀ █░▀░█ █▀▄ █▀▀ █▀▄",
+	"▀▀▀ ▀░░░▀ ▀▀░ ▀▀▀ ▀░▀",
+}
+
+const emberLogoWidth = 21
+
 func (m *Model) renderStatus(width, height int) string {
 	inner := maxInt(1, width-2)
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colorMuted))
 	accent := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent))
 	good := lipgloss.NewStyle().Foreground(lipgloss.Color(colorGood))
 	key := lipgloss.NewStyle().Foreground(lipgloss.Color(colorFaint))
-	divider := lipgloss.NewStyle().Foreground(lipgloss.Color(colorLine)).Render(strings.Repeat("─", inner))
+	line := lipgloss.NewStyle().Foreground(lipgloss.Color(colorLine))
+	divider := line.Render(strings.Repeat("─", inner))
+	brandStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colorAccent2))
 
 	var lines []string
+	if inner >= emberLogoWidth {
+		for _, row := range emberLogo {
+			lines = append(lines, brandStyle.Render(row))
+		}
+	} else {
+		lines = append(lines, brandStyle.Render("EMBER"))
+	}
+	lines = append(lines, "", divider, "")
+
 	for _, section := range sections {
-		text := truncateText(fmt.Sprintf("%s %s", section.key, section.label), inner)
 		style := dim
 		if section.sec == m.activeSection() {
 			style = accent
 		}
-		lines = append(lines, style.Render(text))
+		lines = append(lines, style.Render(padLeftRight(section.key, section.label, inner)))
 	}
 
 	server := "NO SERVER"
@@ -292,16 +304,38 @@ func (m *Model) renderStatus(width, height int) string {
 			server = active.URL
 		}
 	}
+	latency := ""
+	if m.latency > 0 {
+		latency = renderLatency(m.latency.Milliseconds())
+	}
+	serverLine := good.Render("● ") + dim.Render(truncateText(server, maxInt(1, inner-2-lipgloss.Width(latency)-1)))
+	if latency != "" {
+		serverLine = spread(serverLine, latency, inner)
+	}
 	bottom := []string{
 		divider,
-		good.Render(truncateText("● "+server, inner)),
-		key.Render(truncateText("m Servers", inner)),
-		key.Render(truncateText("? Help", inner)),
+		serverLine,
+		"",
+		key.Render("m Servers"),
+		key.Render("? Help"),
 	}
 	padding := maxInt(1, height-len(lines)-len(bottom)-2)
 	lines = append(lines, make([]string, padding)...)
 	lines = append(lines, bottom...)
 	return lipgloss.NewStyle().Width(inner).Margin(1, 1, 0, 1).Render(strings.Join(lines, "\n"))
+}
+
+// padLeftRight puts `left` at column 0 and `right` at the right edge of a
+// width-wide row, filling the middle with spaces.
+func padLeftRight(left, right string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 func (m *Model) renderSearch() string {
@@ -653,19 +687,16 @@ func (m *Model) useSidebar() bool { return m.width >= 104 && m.height >= 22 }
 
 func (m *Model) sidebarWidth() int {
 	if m.width >= 150 {
-		return 22
+		return 24
 	}
 	return 20
 }
 
 func (m *Model) mediaViewport() (int, int) {
-	w := m.width
-	headerHeight := minInt(2, m.height)
 	if m.useSidebar() {
-		w -= m.sidebarWidth() + 1
-		headerHeight = minInt(1, m.height)
+		return maxInt(1, m.width-m.sidebarWidth()-1), m.height
 	}
-	return maxInt(1, w), maxInt(1, m.height-headerHeight)
+	return m.width, maxInt(1, m.height-minInt(2, m.height))
 }
 
 func (m *Model) coverFrame(width, height int) (int, int) {
