@@ -525,6 +525,12 @@ func (m *Model) currentBreadcrumb() string {
 }
 
 func itemContext(item service.MediaItem) string {
+	if item.EpisodeCount > 1 {
+		if latest := strings.TrimSpace(item.LatestEpisodeName); latest != "" {
+			return "Latest / " + latest
+		}
+		return fmt.Sprintf("%d episodes grouped", item.EpisodeCount)
+	}
 	if item.Type == "Episode" {
 		parts := make([]string, 0, 2)
 		if strings.TrimSpace(item.SeriesName) != "" {
@@ -543,6 +549,9 @@ func itemContext(item service.MediaItem) string {
 
 func itemMeta(item service.MediaItem) []string {
 	parts := []string{strings.ToUpper(item.Type)}
+	if item.EpisodeCount > 1 {
+		parts = append(parts, fmt.Sprintf("%d EPISODES", item.EpisodeCount))
+	}
 	if item.Type == "Playlist" && strings.TrimSpace(item.Overview) != "" {
 		parts = append(parts, item.Overview)
 	}
@@ -661,7 +670,7 @@ func (m *Model) statusActions() []string {
 		} else if item.Type == "Season" {
 			actions = append(actions, "⇧S    Open series")
 		}
-		if item.Type != "Playlist" {
+		if item.Type != "Playlist" && item.EpisodeCount < 2 {
 			actions = append(actions, "F     Favorite")
 		}
 	}
@@ -743,7 +752,7 @@ func (m *Model) modalContentWidth(preferredWidth int) int {
 func (m *Model) modalCard(content string, preferredWidth int) string {
 	inner := m.modalContentWidth(preferredWidth)
 	return lipgloss.NewStyle().
-		Width(inner + 4).
+		Width(inner+4).
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(colorLine)).

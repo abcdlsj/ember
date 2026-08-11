@@ -61,9 +61,10 @@ func (s *MediaService) GetFavorites(limit int) (*MediaList, error) {
 		return nil, fmt.Errorf("failed to get favorites: %w", err)
 	}
 
+	grouped := aggregateEpisodeSeries(s.convertItems(items))
 	return &MediaList{
-		Items:    s.convertItems(items),
-		Total:    len(items),
+		Items:    grouped,
+		Total:    len(grouped),
 		Page:     0,
 		PageSize: limit,
 		HasMore:  false,
@@ -192,18 +193,39 @@ func (s *MediaService) GetHistory(page, pageSize int) (*MediaList, error) {
 		pageSize = 20
 	}
 
-	items, total, err := s.client.GetHistory(page*pageSize, pageSize)
+	items, err := s.getAllHistoryItems()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get history: %w", err)
+		return nil, err
 	}
+	grouped := aggregateEpisodeSeries(s.convertItems(items))
+	start := min(page*pageSize, len(grouped))
+	end := min(start+pageSize, len(grouped))
 
 	return &MediaList{
-		Items:    s.convertItems(items),
-		Total:    total,
+		Items:    grouped[start:end],
+		Total:    len(grouped),
 		Page:     page,
 		PageSize: pageSize,
-		HasMore:  (page+1)*pageSize < total,
+		HasMore:  end < len(grouped),
 	}, nil
+}
+
+func (s *MediaService) getAllHistoryItems() ([]api.MediaItem, error) {
+	const chunkSize = 50
+	var all []api.MediaItem
+	for start, total := 0, 1; start < total; {
+		items, count, err := s.client.GetHistory(start, chunkSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get history: %w", err)
+		}
+		total = count
+		all = append(all, items...)
+		if len(items) == 0 {
+			break
+		}
+		start += len(items)
+	}
+	return all, nil
 }
 
 func (s *MediaService) GetPlaylists() (*MediaList, error) {
@@ -873,6 +895,108 @@ func (s *MediaService) convertItems(items []api.MediaItem) []MediaItem {
 		result[i] = s.convertItem(item)
 	}
 	return result
+}
+
+// aggregateEpisodeSeries folds repeated episodes into a browsable series item.
+// A single episode stays directly playable, and episodes without SeriesID are
+// left untouched. Output order follows the first occurrence of each series.
+func aggregateEpisodeSeries(items []MediaItem) []MediaItem {
+	type episodeGroup struct {
+		count          int
+		representative MediaItem
+	}
+
+	groups := make(map[string]episodeGroup)
+	for _, item := range items {
+		if item.Type != "Episode" || strings.TrimSpace(item.SeriesID) == "" {
+			continue
+		}
+		group := groups[item.SeriesID]
+		if group.count == 0 || episodeIsMoreRecent(item, group.representative) {
+			group.representative = item
+		}
+		group.count++
+		groups[item.SeriesID] = group
+	}
+
+	result := make([]MediaItem, 0, len(items))
+	emitted := make(map[string]bool)
+	for _, item := range items {
+		if item.Type != "Episode" || strings.TrimSpace(item.SeriesID) == "" {
+			result = append(result, item)
+			continue
+		}
+		group := groups[item.SeriesID]
+		if group.count < 2 {
+			result = append(result, item)
+			continue
+		}
+		if emitted[item.SeriesID] {
+			continue
+		}
+		emitted[item.SeriesID] = true
+		result = append(result, episodeSeriesItem(group.representative, group.count))
+	}
+	return result
+}
+
+func episodeIsMoreRecent(candidate, current MediaItem) bool {
+	if candidate.UserData == nil || candidate.UserData.LastPlayedDate == "" {
+		return false
+	}
+	if current.UserData == nil || current.UserData.LastPlayedDate == "" {
+		return true
+	}
+	return candidate.UserData.LastPlayedDate > current.UserData.LastPlayedDate
+}
+
+func episodeSeriesItem(episode MediaItem, count int) MediaItem {
+	name := strings.TrimSpace(episode.SeriesName)
+	if name == "" {
+		name = strings.TrimSpace(episode.SeasonName)
+	}
+	if name == "" {
+		name = episode.Name
+	}
+	latest := episodeDisplayName(episode)
+	grouped := episode
+	grouped.ID = episode.SeriesID
+	grouped.Name = name
+	grouped.Type = "Series"
+	grouped.SeriesName = name
+	grouped.SeasonID = ""
+	grouped.SeasonName = ""
+	grouped.ParentID = ""
+	grouped.IndexNumber = 0
+	grouped.RunTimeTicks = 0
+	grouped.MediaSources = nil
+	grouped.Playable = false
+	grouped.Browsable = true
+	grouped.EpisodeCount = count
+	grouped.LatestEpisodeName = latest
+	grouped.Overview = fmt.Sprintf("%d episodes · Latest: %s", count, latest)
+	if grouped.SeriesImageURL != "" {
+		grouped.ImageURL = grouped.SeriesImageURL
+		grouped.ImageURLs = []string{grouped.SeriesImageURL}
+	}
+	if grouped.SeriesImageHigh != "" {
+		grouped.ImageURLHigh = grouped.SeriesImageHigh
+	}
+	return grouped
+}
+
+func episodeDisplayName(item MediaItem) string {
+	parts := make([]string, 0, 3)
+	if season := strings.TrimSpace(item.SeasonName); season != "" {
+		parts = append(parts, season)
+	}
+	if item.IndexNumber > 0 {
+		parts = append(parts, fmt.Sprintf("E%02d", item.IndexNumber))
+	}
+	if name := strings.TrimSpace(item.Name); name != "" {
+		parts = append(parts, name)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func (s *MediaService) convertItem(item api.MediaItem) MediaItem {

@@ -719,6 +719,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f":
 		if len(m.items) > 0 && m.cursor < len(m.items) {
 			item := m.items[m.cursor]
+			if item.EpisodeCount > 1 {
+				m.status = "Open the series to manage individual episode favorites"
+				return m, nil
+			}
 			if item.Type != "Playlist" {
 				return m, m.toggleFavorite(item)
 			}

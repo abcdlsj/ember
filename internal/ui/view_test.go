@@ -126,6 +126,37 @@ func TestWrapTextCapsLines(t *testing.T) {
 	}
 }
 
+func TestGroupedSeriesShowsEpisodeSummary(t *testing.T) {
+	item := service.MediaItem{
+		ID:                "series-1",
+		Name:              "North Star",
+		Type:              "Series",
+		EpisodeCount:      4,
+		LatestEpisodeName: "Season 2 · E03 · Return",
+		Browsable:         true,
+	}
+
+	context := itemContext(item)
+	if context != "Latest / Season 2 · E03 · Return" {
+		t.Fatalf("context = %q", context)
+	}
+	meta := strings.Join(itemMeta(item), " | ")
+	if !strings.Contains(meta, "SERIES") || !strings.Contains(meta, "4 EPISODES") {
+		t.Fatalf("meta does not expose grouped episode count: %q", meta)
+	}
+
+	model := testModel(140, 42)
+	model.items = []service.MediaItem{item}
+	model.totalItems = 1
+	_, cmd := model.selectItem()
+	if cmd == nil {
+		t.Fatal("opening a grouped series should load its seasons")
+	}
+	if model.view.mode != viewSeasons || model.view.seriesID != item.ID {
+		t.Fatalf("group opened view=%v series=%q, want seasons for %q", model.view.mode, model.view.seriesID, item.ID)
+	}
+}
+
 func testModel(width, height int) *Model {
 	store := new(storage.Store)
 	svc := service.NewMediaService(api.New(""), store)

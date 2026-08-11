@@ -7,26 +7,30 @@ import (
 )
 
 type MediaItem struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	Type         string        `json:"type"`
-	Year         int           `json:"year,omitempty"`
-	SeriesID     string        `json:"seriesId,omitempty"`
-	SeriesName   string        `json:"seriesName,omitempty"`
-	SeasonID     string        `json:"seasonId,omitempty"`
-	SeasonName   string        `json:"seasonName,omitempty"`
-	ParentID     string        `json:"parentId,omitempty"`
-	IndexNumber  int           `json:"indexNumber,omitempty"`
-	Overview     string        `json:"overview,omitempty"`
-	RunTimeTicks int64         `json:"runTimeTicks,omitempty"`
-	ImageURL     string        `json:"imageUrl,omitempty"`
-	ImageURLs    []string      `json:"imageUrls,omitempty"`
-	ImageURLHigh string        `json:"imageUrlHigh,omitempty"`
-	BackdropURL  string        `json:"backdropUrl,omitempty"`
-	UserData     *UserData     `json:"userData,omitempty"`
-	MediaSources []MediaSource `json:"mediaSources,omitempty"`
-	Playable     bool          `json:"playable"`
-	Browsable    bool          `json:"browsable"`
+	ID                string        `json:"id"`
+	Name              string        `json:"name"`
+	Type              string        `json:"type"`
+	Year              int           `json:"year,omitempty"`
+	SeriesID          string        `json:"seriesId,omitempty"`
+	SeriesName        string        `json:"seriesName,omitempty"`
+	SeasonID          string        `json:"seasonId,omitempty"`
+	SeasonName        string        `json:"seasonName,omitempty"`
+	ParentID          string        `json:"parentId,omitempty"`
+	IndexNumber       int           `json:"indexNumber,omitempty"`
+	Overview          string        `json:"overview,omitempty"`
+	RunTimeTicks      int64         `json:"runTimeTicks,omitempty"`
+	ImageURL          string        `json:"imageUrl,omitempty"`
+	ImageURLs         []string      `json:"imageUrls,omitempty"`
+	ImageURLHigh      string        `json:"imageUrlHigh,omitempty"`
+	SeriesImageURL    string        `json:"seriesImageUrl,omitempty"`
+	SeriesImageHigh   string        `json:"seriesImageHigh,omitempty"`
+	BackdropURL       string        `json:"backdropUrl,omitempty"`
+	UserData          *UserData     `json:"userData,omitempty"`
+	MediaSources      []MediaSource `json:"mediaSources,omitempty"`
+	Playable          bool          `json:"playable"`
+	Browsable         bool          `json:"browsable"`
+	EpisodeCount      int           `json:"episodeCount,omitempty"`
+	LatestEpisodeName string        `json:"latestEpisodeName,omitempty"`
 }
 
 type UserData struct {
@@ -182,6 +186,12 @@ func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 	imageURL := firstImageURL(imageURLs)
 	imageURLHigh := firstImageURL(buildImageCandidateURLs(item, imageBaseURL, token, 800))
 	backdropURL := buildBackdropURL(item, imageBaseURL, token)
+	seriesImageURL := ""
+	seriesImageHigh := ""
+	if item.SeriesID != "" && item.SeriesPrimaryImageTag != "" {
+		seriesImageURL = buildImageURL(imageBaseURL, item.SeriesID, "Primary", 400, token)
+		seriesImageHigh = buildImageURL(imageBaseURL, item.SeriesID, "Primary", 800, token)
+	}
 
 	playable := item.Type == "Movie" || item.Type == "Episode" || item.Type == "Video"
 	browsable := item.Type == "Series" || item.Type == "Season" ||
@@ -228,26 +238,28 @@ func convertAPIItem(item api.MediaItem, imageBaseURL, token string) MediaItem {
 	}
 
 	return MediaItem{
-		ID:           item.ID,
-		Name:         item.Name,
-		Type:         item.Type,
-		Year:         item.Year,
-		SeriesID:     item.SeriesID,
-		SeriesName:   item.SeriesName,
-		SeasonID:     item.SeasonID,
-		SeasonName:   item.SeasonName,
-		ParentID:     item.ParentID,
-		IndexNumber:  item.IndexNumber,
-		Overview:     item.Overview,
-		RunTimeTicks: item.RunTimeTicks,
-		ImageURL:     imageURL,
-		ImageURLs:    imageURLs,
-		ImageURLHigh: imageURLHigh,
-		BackdropURL:  backdropURL,
-		UserData:     userData,
-		MediaSources: mediaSources,
-		Playable:     playable,
-		Browsable:    browsable,
+		ID:              item.ID,
+		Name:            item.Name,
+		Type:            item.Type,
+		Year:            item.Year,
+		SeriesID:        item.SeriesID,
+		SeriesName:      item.SeriesName,
+		SeasonID:        item.SeasonID,
+		SeasonName:      item.SeasonName,
+		ParentID:        item.ParentID,
+		IndexNumber:     item.IndexNumber,
+		Overview:        item.Overview,
+		RunTimeTicks:    item.RunTimeTicks,
+		ImageURL:        imageURL,
+		ImageURLs:       imageURLs,
+		ImageURLHigh:    imageURLHigh,
+		SeriesImageURL:  seriesImageURL,
+		SeriesImageHigh: seriesImageHigh,
+		BackdropURL:     backdropURL,
+		UserData:        userData,
+		MediaSources:    mediaSources,
+		Playable:        playable,
+		Browsable:       browsable,
 	}
 }
 
