@@ -6,3 +6,5 @@ ember
 *.log
 coverage.out
 coverage.html
+/dist/
+/target/
