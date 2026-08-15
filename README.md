@@ -68,5 +68,5 @@ make install PREFIX=/usr/local
 
 ## Screenshots
 
-![Screenshot 1](image.png)
-![Screenshot 2](image2.png)
+![Favorites view](docs/images/favorites.png)
+![Continue Watching view](docs/images/continue-watching.png)
